@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::future::Future;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{Query, State},
@@ -12,6 +12,7 @@ use axum::{
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 const API_BASE: &str = "https://horizons.hackclub.com";
@@ -26,6 +27,7 @@ struct UserSession {
     sub: String,
     slack_id: Option<String>,
     display_name: Option<String>,
+    created_at: Instant,
 }
 
 // ── Horizons client ──
@@ -45,7 +47,10 @@ impl HorizonsClient {
         let token = std::env::var("HORIZONS_SESSION_ID")
             .map_err(|_| anyhow::anyhow!("HORIZONS_SESSION_ID env var not set"))?;
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to build client: {}", e))?,
             token,
             cached_stats: RwLock::new(None),
             cached_queue: RwLock::new(None),
@@ -70,7 +75,8 @@ impl HorizonsClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API {}: {}", status.as_u16(), body);
+            eprintln!("Horizons API error {} on {}: {}", status.as_u16(), path, body);
+            anyhow::bail!("upstream request failed (status {})", status.as_u16());
         }
         Ok(resp.json().await?)
     }
@@ -117,6 +123,76 @@ impl HorizonsClient {
             self.fetch_json("/api/reviewer/fraud-rejected")
         })
         .await
+    }
+
+    async fn compute_event_stats(&self) -> Result<serde_json::Value, anyhow::Error> {
+        use std::collections::BTreeMap;
+
+        let past_res = self.get_past_reviews().await;
+
+        let past_reviews = match &past_res {
+            Ok(p) => p["reviews"].as_array().cloned().unwrap_or_default(),
+            Err(_) => vec![],
+        };
+
+        let mut by_project: BTreeMap<u64, (String, serde_json::Value)> = BTreeMap::new();
+
+        for r in &past_reviews {
+            let approved = r["reviewPassed"].as_bool().unwrap_or(false)
+                && r["approvalStatus"].as_str().unwrap_or("") == "approved";
+            if !approved {
+                continue;
+            }
+            let pid = match r["projectId"].as_u64() {
+                Some(id) => id,
+                None => continue,
+            };
+            let reviewed_at = r["reviewedAt"].as_str().unwrap_or("");
+            let should_replace = by_project
+                .get(&pid)
+                .map(|(ts, _)| reviewed_at > ts.as_str())
+                .unwrap_or(true);
+            if should_replace {
+                by_project.insert(pid, (reviewed_at.to_string(), r.clone()));
+            }
+        }
+
+        let mut by_event: BTreeMap<String, serde_json::Map<String, serde_json::Value>> = BTreeMap::new();
+
+        for (_, (_, item)) in &by_project {
+            let user = &item["user"];
+            let slug = user["eventSlug"].as_str().unwrap_or("").to_string();
+            let entry = by_event.entry(slug.clone()).or_insert_with(|| {
+                let mut m = serde_json::Map::new();
+                m.insert("slug".into(), serde_json::json!(slug));
+                m.insert("title".into(), serde_json::json!("Other"));
+                m.insert("approvedProjects".into(), serde_json::json!(0));
+                m.insert("approvedHours".into(), serde_json::json!(0.0));
+                m
+            });
+
+            if !slug.is_empty() {
+                if let Some(t) = user["eventTitle"].as_str().filter(|t| !t.is_empty()) {
+                    entry.insert("title".into(), serde_json::json!(t));
+                }
+            }
+
+            let hours = item["approvedHours"].as_f64().unwrap_or(0.0);
+            let prev_hours = entry["approvedHours"].as_f64().unwrap_or(0.0);
+            entry.insert("approvedHours".into(), serde_json::json!(
+                (prev_hours * 100.0 + hours * 100.0).round() / 100.0
+            ));
+            entry.insert("approvedProjects".into(), serde_json::json!(
+                entry["approvedProjects"].as_i64().unwrap_or(0) + 1
+            ));
+        }
+
+        let out: Vec<serde_json::Value> = by_event
+            .into_values()
+            .map(serde_json::Value::Object)
+            .collect();
+
+        Ok(serde_json::json!({ "events": out }))
     }
 
     /// Find all projects for a user across queue, past_reviews, and fraud_rejected
@@ -266,6 +342,7 @@ impl HorizonsClient {
 struct PendingState {
     email: Option<String>,
     referral_code: Option<String>,
+    code_verifier: String,
     created: Instant,
 }
 
@@ -276,6 +353,7 @@ struct AppState {
     hca_redirect_uri: String,
     sessions: RwLock<HashMap<String, UserSession>>,
     pending_states: RwLock<HashMap<String, PendingState>>,
+    rate_limiter: RwLock<HashMap<String, Vec<Instant>>>,
 }
 
 // ── Stats endpoint ──
@@ -334,6 +412,35 @@ fn generate_session_id() -> String {
     hex::encode(bytes)
 }
 
+fn generate_pkce_pair() -> (String, String) {
+    use rand::distributions::{Alphanumeric, DistString};
+    let mut rng = rand::thread_rng();
+    let verifier: String = Alphanumeric.sample_string(&mut rng, 64);
+    let hash = Sha256::digest(verifier.as_bytes());
+    let challenge = base64url_encode(&hash);
+    (verifier, challenge)
+}
+
+fn base64url_encode(input: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        let table = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        out.push(table[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(table[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(table[((triple >> 6) & 0x3F) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(table[(triple & 0x3F) as usize] as char);
+        }
+    }
+    out
+}
+
 fn get_session_id(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
     for c in cookie.split(';') {
@@ -343,6 +450,37 @@ fn get_session_id(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+fn client_ip(headers: &HeaderMap) -> String {
+    if let Some(val) = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next().map(|s| s.trim().to_string()))
+    {
+        return val;
+    }
+    if let Some(val) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        return val.to_string();
+    }
+    "unknown".into()
+}
+
+async fn check_rate_limit(
+    state: &AppState,
+    key: &str,
+    max_requests: usize,
+    window: Duration,
+) -> bool {
+    let mut limiter = state.rate_limiter.write().await;
+    let now = Instant::now();
+    let entries = limiter.entry(key.to_string()).or_default();
+    entries.retain(|t| now.duration_since(*t) < window);
+    if entries.len() >= max_requests {
+        return false;
+    }
+    entries.push(now);
+    true
 }
 
 // ── Auth endpoints ──
@@ -355,14 +493,23 @@ struct LoginQuery {
 
 async fn handle_auth_login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<LoginQuery>,
-) -> Json<serde_json::Value> {
+) -> impl IntoResponse {
+    let ip = client_ip(&headers);
+    if !check_rate_limit(&state, &format!("login:{}", ip), 10, Duration::from_secs(60)).await {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({"error": "rate limit exceeded"})))
+            .into_response();
+    }
+
     let nonce = generate_nonce();
+    let (code_verifier, code_challenge) = generate_pkce_pair();
     {
         let mut pending = state.pending_states.write().await;
         pending.insert(nonce.clone(), PendingState {
             email: q.email.clone(),
             referral_code: q.referral_code.clone(),
+            code_verifier,
             created: Instant::now(),
         });
     }
@@ -373,6 +520,8 @@ async fn handle_auth_login(
     params.push(("response_type", "code"));
     params.push(("scope", "openid slack_id"));
     params.push(("state", &nonce));
+    params.push(("code_challenge", &code_challenge));
+    params.push(("code_challenge_method", "S256"));
 
     if let Some(ref email) = q.email {
         params.push(("login_hint", email.as_str()));
@@ -388,7 +537,7 @@ async fn handle_auth_login(
             .join("&")
     );
 
-    Json(serde_json::json!({ "url": url }))
+    Json(serde_json::json!({ "url": url })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -399,8 +548,14 @@ struct CallbackQuery {
 
 async fn handle_auth_callback(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> impl IntoResponse {
+    let ip = client_ip(&headers);
+    if !check_rate_limit(&state, &format!("callback:{}", ip), 10, Duration::from_secs(60)).await {
+        return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+    }
+
     // Look up pending state by nonce
     let pending = {
         let mut pending_states = state.pending_states.write().await;
@@ -427,6 +582,7 @@ async fn handle_auth_callback(
             ("redirect_uri", state.hca_redirect_uri.as_str()),
             ("code", q.code.as_str()),
             ("grant_type", "authorization_code"),
+            ("code_verifier", &pending.code_verifier),
         ])
         .send()
         .await
@@ -440,11 +596,8 @@ async fn handle_auth_callback(
 
     if !token_resp.status().is_success() {
         let body = token_resp.text().await.unwrap_or_default();
-        return (
-            StatusCode::BAD_GATEWAY,
-            format!("Token exchange error: {}", body),
-        )
-            .into_response();
+        eprintln!("Token exchange error: {}", body);
+        return (StatusCode::BAD_GATEWAY, "Token exchange error").into_response();
     }
 
     let tokens: serde_json::Value = match token_resp.json().await {
@@ -505,6 +658,7 @@ async fn handle_auth_callback(
         sub: sub.clone(),
         slack_id,
         display_name,
+        created_at: Instant::now(),
     };
 
     {
@@ -514,7 +668,7 @@ async fn handle_auth_callback(
 
     // Set cookie + redirect
     let cookie = format!(
-        "sessionId={}; HttpOnly; Path=/; Max-Age={}",
+        "sessionId={}; HttpOnly; Path=/; Max-Age={}; SameSite=Lax",
         session_id, SESSION_TTL_SECS
     );
 
@@ -543,9 +697,14 @@ async fn handle_auth_me(
         }
     };
 
-    let sessions = state.sessions.read().await;
+    let mut sessions = state.sessions.write().await;
     match sessions.get(&sid) {
         Some(session) => {
+            if session.created_at.elapsed().as_secs() > SESSION_TTL_SECS {
+                sessions.remove(&sid);
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "session expired"})))
+                    .into_response();
+            }
             Json(serde_json::json!({
                 "sub": session.sub,
                 "slack_id": session.slack_id,
@@ -567,7 +726,7 @@ async fn handle_auth_logout(
         sessions.remove(&sid);
     }
 
-    let cookie = "sessionId=; HttpOnly; Path=/; Max-Age=0";
+    let cookie = "sessionId=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax";
     let mut h = HeaderMap::new();
     h.insert(header::SET_COOKIE, cookie.parse().unwrap());
     (h, Json(serde_json::json!({"ok": true})))
@@ -588,8 +747,16 @@ async fn handle_my_projects(
     };
 
     let session = {
-        let sessions = state.sessions.read().await;
-        sessions.get(&sid).cloned()
+        let mut sessions = state.sessions.write().await;
+        let entry = sessions.get(&sid).cloned();
+        if let Some(ref s) = entry {
+            if s.created_at.elapsed().as_secs() > SESSION_TTL_SECS {
+                sessions.remove(&sid);
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "session expired"})))
+                    .into_response();
+            }
+        }
+        entry
     };
     let session = match session {
         Some(s) => s,
@@ -646,6 +813,17 @@ async fn handle_my_projects(
     Json(out).into_response()
 }
 
+async fn handle_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.client.compute_event_stats().await {
+        Ok(data) => Json(data).into_response(),
+        Err(e) => {
+            eprintln!("compute_event_stats error: {}", e);
+            let err = serde_json::json!({"error": "failed to compute event stats"});
+            (StatusCode::BAD_GATEWAY, Json(err)).into_response()
+        }
+    }
+}
+
 // ── Dashboard HTML ──
 
 async fn handle_dashboard() -> Html<&'static str> {
@@ -687,6 +865,27 @@ async fn main() -> anyhow::Result<()> {
         hca_redirect_uri,
         sessions: RwLock::new(HashMap::new()),
         pending_states: RwLock::new(HashMap::new()),
+        rate_limiter: RwLock::new(HashMap::new()),
+    });
+
+    // Periodic cleanup of expired pending states and sessions
+    let cleanup_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            let mut pending = cleanup_state.pending_states.write().await;
+            pending.retain(|_, ps| ps.created.elapsed().as_secs() < 600);
+            drop(pending);
+
+            let mut sessions = cleanup_state.sessions.write().await;
+            sessions.retain(|_, s| s.created_at.elapsed().as_secs() < SESSION_TTL_SECS);
+
+            let mut limiter = cleanup_state.rate_limiter.write().await;
+            limiter.retain(|_, entries| {
+                entries.retain(|t| t.elapsed().as_secs() < 60);
+                !entries.is_empty()
+            });
+        }
     });
 
     let app = Router::new()
@@ -697,6 +896,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/me", get(handle_auth_me))
         .route("/api/auth/logout", get(handle_auth_logout))
         .route("/api/my/projects", get(handle_my_projects))
+        .route("/api/events", get(handle_events))
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());
@@ -739,6 +939,7 @@ const HTML: &str = r##"<!doctype html>
   .page {
     padding: 20px 40px;
     max-width: 780px;
+    margin: 0 auto;
   }
   .card {
     background: #f3e8d8;
@@ -1021,6 +1222,69 @@ const HTML: &str = r##"<!doctype html>
     font-weight: 600;
   }
 
+  /* ── Event blobs ── */
+  .events-card {
+    margin-top: 20px;
+  }
+  .events-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+  .event-blob {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 120px;
+    padding: 16px 20px 14px;
+    border: 3px solid #000;
+    border-radius: 20px;
+    background: #fff8ee;
+    box-shadow: 3px 3px 0 0 #000;
+    gap: 2px;
+  }
+  .event-blob-name {
+    font-family: 'Bricolage Grotesque', sans-serif;
+    font-weight: 700;
+    font-size: 13px;
+    text-align: center;
+    line-height: 1.2;
+    margin-bottom: 4px;
+  }
+  .event-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1;
+  }
+  .event-stat + .event-stat {
+    margin-top: 4px;
+  }
+  .event-stat-num {
+    font-size: 22px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .event-stat-num-sm {
+    font-size: 16px;
+    color: #444;
+  }
+  .event-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: #666;
+    letter-spacing: 0.05em;
+    margin-top: 1px;
+  }
+  .events-skel {
+    height: 16px;
+    background: #ddd;
+    border-radius: 6px;
+    animation: pulse 1.5s infinite;
+    margin-bottom: 8px;
+  }
+
   @media (max-width: 600px) {
     .head { padding: 20px 16px 0; flex-wrap: wrap; gap: 12px; }
     .page { padding: 16px; }
@@ -1042,9 +1306,9 @@ const HTML: &str = r##"<!doctype html>
 
 <div class="head">
   <div class="head-left">
-    <svg viewBox="0 0 400 50" width="360" height="80" fill="#000">
-      <text font-family="'Bricolage Grotesque',sans-serif" font-weight="700" font-size="34" y="38">HORIZONS</text>
-      <text font-family="'DM Sans',sans-serif" font-weight="500" font-size="16" y="38" x="195" fill="#666">dashboard</text>
+    <svg viewBox="0 0 460 56" width="460" height="90" fill="#000">
+      <text font-family="'Bricolage Grotesque',sans-serif" font-weight="800" font-size="38" y="40">HORIZONS</text>
+      <text font-family="'DM Sans',sans-serif" font-weight="500" font-size="18" y="40" x="195" fill="#888">dashboard</text>
     </svg>
   </div>
   <div class="auth-row" id="auth-row">
@@ -1098,6 +1362,17 @@ const HTML: &str = r##"<!doctype html>
     <div id="projects-content">
       <div class="island-empty">Log in to see your projects review status.</div>
     </div>
+  </div>
+
+  <!-- Events card -->
+  <div class="card events-card">
+    <div class="card-title">Event Approved Hours</div>
+    <div id="events-skel">
+      <div class="events-skel"></div>
+      <div class="events-skel" style="width:80%"></div>
+      <div class="events-skel" style="width:60%"></div>
+    </div>
+    <div id="events-content" style="display:none"></div>
   </div>
 </div>
 
@@ -1308,6 +1583,43 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// ── Event blobs ──
+async function loadEvents() {
+  const skel = document.getElementById('events-skel');
+  const cont = document.getElementById('events-content');
+  try {
+    const r = await fetch('/api/events');
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    if (!data.events || !data.events.length) {
+      skel.style.display = 'none';
+      cont.style.display = '';
+      cont.innerHTML = '<div class="island-empty">No approved projects found.</div>';
+      return;
+    }
+    skel.style.display = 'none';
+    cont.style.display = '';
+    cont.innerHTML = '<div class="events-grid">' +
+      data.events.map(e => `<div class="event-blob">
+        <div class="event-blob-name">${escHtml(e.title)}</div>
+        <div class="event-stat">
+          <div class="event-stat-num">${e.approvedProjects}</div>
+          <div class="event-stat-label">projects</div>
+        </div>
+        <div class="event-stat">
+          <div class="event-stat-num event-stat-num-sm">${Math.round(e.approvedHours)}</div>
+          <div class="event-stat-label">hours</div>
+        </div>
+      </div>`).join('') +
+      '</div>';
+  } catch (e) {
+    console.error('Failed to load events:', e);
+    skel.style.display = '';
+    cont.style.display = 'none';
+  }
+}
+
 // ── Pipeline chart ──
 async function loadStats() {
   const skel = document.getElementById('skel');
@@ -1348,6 +1660,8 @@ async function loadStats() {
 
 loadStats();
 setInterval(loadStats, 30000);
+loadEvents();
+setInterval(loadEvents, 30000);
 checkAuth();
 </script>
 </body>
