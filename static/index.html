@@ -17,16 +17,24 @@
       <text font-family="'DM Sans',sans-serif" font-weight="500" font-size="18" y="40" x="195" fill="#888">dashboard</text>
     </svg>
   </div>
-  <div class="auth-row" id="auth-row">
-    <div id="user-area"></div>
-    <a id="login-btn" class="hca-btn" href="#">
-      <svg viewBox="0 0 20 20" width="18" height="18" fill="none">
-        <path d="M3 2h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm2 3v10h3V5H5zm5 0v10h3V5h-3z" fill="#fff"/>
-        <rect x="2" y="2" width="16" height="16" rx="2" stroke="#fff" stroke-width="1.5" fill="none"/>
-        <path d="M5 5h3v3H5V5zm5 0h3v3h-3V5z" fill="#fff"/>
-      </svg>
-      Sign in with Hack Club
-    </a>
+  <div class="head-right">
+    <div class="auth-row" id="auth-row">
+      <div id="user-area"></div>
+      <a id="login-btn" class="hca-btn" href="#">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none">
+          <path d="M3 2h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm2 3v10h3V5H5zm5 0v10h3V5h-3z" fill="#fff"/>
+          <rect x="2" y="2" width="16" height="16" rx="2" stroke="#fff" stroke-width="1.5" fill="none"/>
+          <path d="M5 5h3v3H5V5zm5 0h3v3h-3V5z" fill="#fff"/>
+        </svg>
+        Sign in with Hack Club
+      </a>
+    </div>
+    <div class="dev-box" id="dev-box" style="display:none">
+      <span class="dev-tag">DEV</span>
+      <input id="dev-user" placeholder="Slack user ID…" spellcheck="false" autocomplete="off">
+      <button id="dev-go">View</button>
+      <button id="dev-clear" title="Back to your account">×</button>
+    </div>
   </div>
 </div>
 
@@ -62,7 +70,7 @@
 
   <!-- Projects island -->
   <div class="island open" id="island">
-    <div class="island-title">
+    <div class="island-title" id="island-title">
       My Submitted Projects
     </div>
     <div id="projects-content">

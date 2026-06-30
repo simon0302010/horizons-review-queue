@@ -1,5 +1,7 @@
 // ── Auth state ──
 let currentUser = null;
+let devEnabled = false;   // DEV mode flag from /api/config
+let devUser = null;       // Slack ID being previewed in DEV mode
 
 async function checkAuth() {
   try {
@@ -54,16 +56,22 @@ async function loadMyProjects() {
   const island = document.getElementById('island');
   const content = document.getElementById('projects-content');
 
-  if (!currentUser) {
+  if (!currentUser && !devUser) {
     content.innerHTML = '<div class="island-empty">Log in to see your projects review status.</div>';
     return;
   }
 
   island.classList.add('open');
-  content.innerHTML = '<div class="island-loading">Loading your projects...</div>';
+  const titleEl = document.getElementById('island-title');
+  if (titleEl) titleEl.textContent = devUser ? `Projects · ${devUser}` : 'My Submitted Projects';
+  const who = devUser ? ` for ${escHtml(devUser)}` : '';
+  content.innerHTML = `<div class="island-loading">Loading projects${who}...</div>`;
 
   try {
-    const r = await fetch('/api/my/projects');
+    const url = devUser
+      ? `/api/my/projects?user=${encodeURIComponent(devUser)}`
+      : '/api/my/projects';
+    const r = await fetch(url);
     if (!r.ok) throw new Error(await r.text());
     const projects = await r.json();
 
@@ -102,13 +110,17 @@ async function loadMyProjects() {
         }
 
         return `<div class="project-item">
-          <div class="project-info">
-            <div class="project-title">${escHtml(p.projectTitle || '(untitled)')}</div>
-            <div class="project-meta">${escHtml(meta)}</div>
+          <div class="project-row">
+            <div class="project-info">
+              <div class="project-title">${escHtml(p.projectTitle || '(untitled)')}</div>
+              <div class="project-meta">${escHtml(meta)}</div>
+            </div>
+            <div class="project-status">
+              ${mainBadges}
+            </div>
           </div>
-          <div class="project-status">
-            ${mainBadges}
-          </div>
+          ${renderFeedback(p)}
+          ${renderTimeline(p)}
         </div>`;
       }).join('');
   } catch (e) {
@@ -200,6 +212,60 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// ── Reviewer feedback + timeline ──
+function renderFeedback(p) {
+  const fb = (p.latestFeedback || '').trim();
+  if (!fb) return '';
+  return `<div class="project-feedback">
+    <span class="feedback-label">Reviewer feedback</span>
+    <span class="feedback-text">${escHtml(fb)}</span>
+  </div>`;
+}
+
+function renderTimeline(p) {
+  const tl = Array.isArray(p.timeline) ? p.timeline : [];
+  // A lone "submitted" entry isn't an interesting history; only show when there's
+  // at least one review or resubmission to look back on.
+  if (tl.length < 2) return '';
+
+  const rows = tl.map(e => {
+    const type = e.type || '';
+    const hours = (e.approvedHours != null) ? e.approvedHours
+                : (e.submittedHours != null) ? e.submittedHours
+                : (e.hours != null) ? e.hours : null;
+    const bits = [];
+    if (hours != null) bits.push(`${hours}h`);
+    if (e.timestamp) bits.push(fmtDate(e.timestamp));
+    const efb = (e.userFeedback || '').trim();
+    return `<div class="tl-event tl-${escHtml(type)}">
+      <div class="tl-head">
+        <span class="tl-type">${escHtml(tlLabel(type))}</span>
+        <span class="tl-meta">${bits.join(' · ')}</span>
+      </div>
+      ${efb ? `<div class="tl-feedback">${escHtml(efb)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  return `<button class="timeline-toggle" data-show="Show timeline (${tl.length})" data-hide="Hide timeline">Show timeline (${tl.length})</button>
+    <div class="timeline" hidden>${rows}</div>`;
+}
+
+function tlLabel(type) {
+  switch (type) {
+    case 'submitted':   return 'Submitted';
+    case 'resubmitted': return 'Resubmitted';
+    case 'approved':    return 'Approved';
+    case 'rejected':    return 'Rejected';
+    default:            return type ? type.replace(/_/g, ' ') : 'Event';
+  }
+}
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 // ── Event blobs ──
 async function loadEvents() {
   const skel = document.getElementById('events-skel');
@@ -275,8 +341,58 @@ async function loadStats() {
   }
 }
 
+// ── Timeline expand/collapse (event delegation; container persists) ──
+document.getElementById('projects-content').addEventListener('click', (e) => {
+  const btn = e.target.closest('.timeline-toggle');
+  if (!btn) return;
+  const tl = btn.nextElementSibling;
+  if (!tl || !tl.classList.contains('timeline')) return;
+  if (tl.hasAttribute('hidden')) {
+    tl.removeAttribute('hidden');
+    btn.textContent = btn.dataset.hide;
+  } else {
+    tl.setAttribute('hidden', '');
+    btn.textContent = btn.dataset.show;
+  }
+});
+
+// ── DEV user-override box ──
+async function initDevBox() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    devEnabled = !!d.dev;
+  } catch { devEnabled = false; }
+  if (!devEnabled) return;
+
+  const box = document.getElementById('dev-box');
+  const input = document.getElementById('dev-user');
+  box.style.display = '';
+
+  const apply = () => {
+    const v = input.value.trim();
+    devUser = v || null;
+    loadMyProjects();
+  };
+  document.getElementById('dev-go').addEventListener('click', apply);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
+  document.getElementById('dev-clear').addEventListener('click', () => {
+    input.value = '';
+    devUser = null;
+    loadMyProjects();
+  });
+
+  // Deep-link preview: ?user=<slackId> auto-loads that user (DEV only).
+  const preset = new URLSearchParams(location.search).get('user');
+  if (preset) {
+    input.value = preset;
+    apply();
+  }
+}
+
 loadStats();
 setInterval(loadStats, 30000);
 loadEvents();
 setInterval(loadEvents, 30000);
 checkAuth();
+initDevBox();

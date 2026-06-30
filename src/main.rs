@@ -40,6 +40,7 @@ struct HorizonsClient {
     cached_past_reviews: RwLock<Option<(Instant, serde_json::Value)>>,
     cached_fraud_rejected: RwLock<Option<(Instant, serde_json::Value)>>,
     cached_user_projects: RwLock<HashMap<String, (Instant, Vec<serde_json::Value>)>>,
+    cached_submission_detail: RwLock<HashMap<u64, (Instant, serde_json::Value)>>,
 }
 
 impl HorizonsClient {
@@ -57,6 +58,7 @@ impl HorizonsClient {
             cached_past_reviews: RwLock::new(None),
             cached_fraud_rejected: RwLock::new(None),
             cached_user_projects: RwLock::new(HashMap::new()),
+            cached_submission_detail: RwLock::new(HashMap::new()),
         })
     }
 
@@ -125,6 +127,27 @@ impl HorizonsClient {
         .await
     }
 
+    /// Fetch full submission detail (timeline + reviewer feedback), cached per submissionId.
+    async fn get_submission_detail(
+        &self,
+        submission_id: u64,
+    ) -> Result<serde_json::Value, anyhow::Error> {
+        {
+            let guard = self.cached_submission_detail.read().await;
+            if let Some((ts, data)) = guard.get(&submission_id) {
+                if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+                    return Ok(data.clone());
+                }
+            }
+        }
+        let data = self
+            .fetch_json(&format!("/api/reviewer/submissions/{}", submission_id))
+            .await?;
+        let mut guard = self.cached_submission_detail.write().await;
+        guard.insert(submission_id, (Instant::now(), data.clone()));
+        Ok(data)
+    }
+
     async fn compute_event_stats(&self) -> Result<serde_json::Value, anyhow::Error> {
         use std::collections::BTreeMap;
 
@@ -162,6 +185,10 @@ impl HorizonsClient {
         for (_, (_, item)) in &by_project {
             let user = &item["user"];
             let slug = user["eventSlug"].as_str().unwrap_or("").to_string();
+            // Sol is excluded from the event approved-hours breakdown.
+            if slug.eq_ignore_ascii_case("sol") {
+                continue;
+            }
             let entry = by_event.entry(slug.clone()).or_insert_with(|| {
                 let mut m = serde_json::Map::new();
                 m.insert("slug".into(), serde_json::json!(slug));
@@ -261,32 +288,95 @@ impl HorizonsClient {
             }
         }
 
-        // Deduplicate by projectId, keeping the latest submission
+        // Deduplicate by projectId, keeping the latest submission.
+        // projectId comes back as a JSON number, so match on the numeric value
+        // (an earlier as_str()-based key never matched and let duplicates through).
         {
-            let mut seen: HashMap<&str, usize> = HashMap::new();
+            fn proj_key(item: &serde_json::Value) -> Option<String> {
+                let pid = &item["projectId"];
+                pid.as_u64()
+                    .map(|n| n.to_string())
+                    .or_else(|| pid.as_i64().map(|n| n.to_string()))
+                    .or_else(|| pid.as_str().map(|s| s.to_string()))
+            }
+            // A queue item carries createdAt (its resubmit time); a reviewed item
+            // carries reviewedAt. Use whichever is present to order submissions.
+            fn ts(item: &serde_json::Value) -> &str {
+                item["reviewedAt"]
+                    .as_str()
+                    .or_else(|| item["createdAt"].as_str())
+                    .unwrap_or("")
+            }
+
+            let mut seen: HashMap<String, usize> = HashMap::new();
             let mut deduped: Vec<serde_json::Value> = Vec::new();
             for item in &results {
-                let pid = item["projectId"].as_str().unwrap_or("");
-                if pid.is_empty() {
-                    deduped.push(item.clone());
-                    continue;
-                }
-                let curr_ts = item["reviewedAt"].as_str()
-                    .or_else(|| item["createdAt"].as_str())
-                    .unwrap_or("");
-                if let Some(&prev_idx) = seen.get(pid) {
-                    let prev_ts = deduped[prev_idx]["reviewedAt"].as_str()
-                        .or_else(|| deduped[prev_idx]["createdAt"].as_str())
-                        .unwrap_or("");
-                    if curr_ts > prev_ts {
+                let key = match proj_key(item) {
+                    Some(k) => k,
+                    None => {
+                        deduped.push(item.clone());
+                        continue;
+                    }
+                };
+                if let Some(&prev_idx) = seen.get(&key) {
+                    if ts(item) > ts(&deduped[prev_idx]) {
                         deduped[prev_idx] = item.clone();
                     }
                 } else {
-                    seen.insert(pid, deduped.len());
+                    seen.insert(key, deduped.len());
                     deduped.push(item.clone());
                 }
             }
             results = deduped;
+        }
+
+        // Enrich each project with its review timeline and the latest reviewer feedback.
+        // The submission-detail endpoint returns the project's full history regardless of
+        // which submissionId we ask for, so one fetch per project is enough.
+        for item in &mut results {
+            let sub_id = item["submissionId"].as_u64();
+            let Some(id) = sub_id else { continue };
+            let Ok(detail) = self.get_submission_detail(id).await else { continue };
+            let Some(obj) = item.as_object_mut() else { continue };
+
+            let Some(timeline) = detail["timeline"].as_array() else { continue };
+
+            // Pass through only the user-facing fields of each timeline event
+            // (newest first), dropping internal reviewer analysis.
+            let cleaned: Vec<serde_json::Value> = timeline
+                .iter()
+                .map(|e| {
+                    let mut m = serde_json::Map::new();
+                    // reviewerName is deliberately omitted — reviewer identity is not exposed.
+                    for k in [
+                        "type",
+                        "userFeedback",
+                        "approvedHours",
+                        "submittedHours",
+                        "hours",
+                        "timestamp",
+                    ] {
+                        if let Some(v) = e.get(k) {
+                            if !v.is_null() {
+                                m.insert(k.to_string(), v.clone());
+                            }
+                        }
+                    }
+                    serde_json::Value::Object(m)
+                })
+                .collect();
+
+            // Most recent event that actually carries reviewer feedback.
+            if let Some(fb) = timeline.iter().find(|e| {
+                e["userFeedback"]
+                    .as_str()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+            }) {
+                obj.insert("latestFeedback".into(), fb["userFeedback"].clone());
+            }
+
+            obj.insert("timeline".into(), serde_json::json!(cleaned));
         }
 
         // Cache per user
@@ -382,6 +472,7 @@ struct AppState {
     sessions: RwLock<HashMap<String, UserSession>>,
     pending_states: RwLock<HashMap<String, PendingState>>,
     rate_limiter: RwLock<HashMap<String, Vec<Instant>>>,
+    dev_mode: bool,
 }
 
 // ── Stats endpoint ──
@@ -762,15 +853,62 @@ async fn handle_auth_logout(
 
 // ── Dashboard HTML ──
 
+async fn handle_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(serde_json::json!({ "dev": state.dev_mode }))
+}
+
+#[derive(Deserialize)]
+struct MyProjectsQuery {
+    /// DEV-only: view another user's projects by Slack ID.
+    user: Option<String>,
+}
+
 async fn handle_my_projects(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(q): Query<MyProjectsQuery>,
 ) -> impl IntoResponse {
-    let sid = match get_session_id(&headers) {
+    // In DEV mode, an explicit ?user=<slackId> overrides the session entirely so we
+    // can preview the dashboard as any user without logging in as them.
+    let override_slack_id = if state.dev_mode {
+        q.user
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let slack_id = if let Some(id) = override_slack_id {
+        id
+    } else {
+        match resolve_session_slack_id(&state, &headers).await {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        }
+    };
+
+    match state.client.find_user_projects(&slack_id).await {
+        Ok(projects) => projects_response(projects),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// Resolve the logged-in session's Slack ID, or an error response to return.
+async fn resolve_session_slack_id(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<String, axum::response::Response> {
+    let sid = match get_session_id(headers) {
         Some(s) => s,
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"})))
-                .into_response();
+            return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"})))
+                .into_response());
         }
     };
 
@@ -780,8 +918,8 @@ async fn handle_my_projects(
         if let Some(ref s) = entry {
             if s.created_at.elapsed().as_secs() > SESSION_TTL_SECS {
                 sessions.remove(&sid);
-                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "session expired"})))
-                    .into_response();
+                return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "session expired"})))
+                    .into_response());
             }
         }
         entry
@@ -789,30 +927,20 @@ async fn handle_my_projects(
     let session = match session {
         Some(s) => s,
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid session"})))
-                .into_response();
+            return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid session"})))
+                .into_response());
         }
     };
 
-    let slack_id = match session.slack_id {
-        Some(ref id) => id.clone(),
-        None => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no slack_id"})))
-                .into_response();
-        }
-    };
+    match session.slack_id {
+        Some(ref id) => Ok(id.clone()),
+        None => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no slack_id"})))
+            .into_response()),
+    }
+}
 
-    let projects = match state.client.find_user_projects(&slack_id).await {
-        Ok(m) => m,
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
+/// Sort projects newest-first by submission time and serialize to a JSON response.
+fn projects_response(projects: Vec<serde_json::Value>) -> axum::response::Response {
     let mut out: Vec<serde_json::Value> = projects
         .into_iter()
         .map(|p| {
@@ -902,6 +1030,15 @@ async fn main() -> anyhow::Result<()> {
     let hca_redirect_uri = std::env::var("HCA_REDIRECT_URI")
         .map_err(|_| anyhow::anyhow!("HCA_REDIRECT_URI not set"))?;
 
+    // When DEV is enabled, the dashboard exposes a box to view any user's projects
+    // by Slack ID (so we can preview how it looks for different people).
+    let dev_mode = std::env::var("DEV")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if dev_mode {
+        println!("DEV mode enabled — user-override box is active");
+    }
+
     let client = HorizonsClient::new()?;
     let state = Arc::new(AppState {
         client,
@@ -911,6 +1048,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: RwLock::new(HashMap::new()),
         pending_states: RwLock::new(HashMap::new()),
         rate_limiter: RwLock::new(HashMap::new()),
+        dev_mode,
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -944,6 +1082,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/logout", get(handle_auth_logout))
         .route("/api/my/projects", get(handle_my_projects))
         .route("/api/events", get(handle_events))
+        .route("/api/config", get(handle_config))
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());

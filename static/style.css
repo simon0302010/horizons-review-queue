@@ -128,11 +128,58 @@ body {
 }
 
 /* ── Login button / user info ── */
+.head-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
 .auth-row {
   display: flex;
   align-items: center;
   gap: 12px;
 }
+
+/* ── DEV user-override box ── */
+.dev-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 2px dashed #000;
+  border-radius: 10px;
+  background: #fff8ee;
+}
+.dev-tag {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  background: #000;
+  color: #f3e8d8;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.dev-box input {
+  border: 2px solid #000;
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-family: 'DM Sans', monospace;
+  font-size: 12px;
+  width: 150px;
+  background: #fff;
+}
+.dev-box button {
+  border: 2px solid #000;
+  border-radius: 7px;
+  padding: 5px 10px;
+  background: #f3e8d8;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dev-box button:hover { background: #ffe9c7; }
+#dev-clear { padding: 5px 9px; line-height: 1; }
 .hca-btn {
   display: flex;
   align-items: center;
@@ -205,17 +252,19 @@ body {
   gap: 8px;
 }
 .project-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   padding: 12px 16px;
   border: 2px solid #000;
   border-radius: 12px;
   margin-bottom: 8px;
   background: #fff8ee;
-  gap: 12px;
 }
 .project-item:last-child { margin-bottom: 0; }
+.project-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
 .project-info { min-width: 0; flex: 1; }
 .project-title {
   font-weight: 700;
@@ -238,9 +287,81 @@ body {
   justify-content: flex-end;
   gap: 4px;
 }
-.project-status-feedback {
-  width: 100%;
-  text-align: right;
+/* ── Reviewer feedback + timeline ── */
+.project-feedback {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 2px solid #000;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.feedback-label {
+  display: block;
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+  margin-bottom: 3px;
+}
+.feedback-text { color: #222; }
+.timeline-toggle {
+  margin-top: 8px;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-weight: 700;
+  font-size: 12px;
+  color: #000;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.timeline {
+  margin-top: 8px;
+  padding-left: 14px;
+  border-left: 2px solid #000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tl-event { position: relative; }
+.tl-event::before {
+  content: '';
+  position: absolute;
+  left: -21px;
+  top: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #000;
+  background: #d1d5db;
+}
+.tl-event.tl-approved::before { background: #22c55e; }
+.tl-event.tl-rejected::before { background: #e05632; }
+.tl-event.tl-submitted::before,
+.tl-event.tl-resubmitted::before { background: #facc15; }
+.tl-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tl-type {
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.tl-meta { font-size: 11px; color: #666; font-weight: 500; }
+.tl-feedback {
+  font-size: 12px;
+  color: #333;
+  margin-top: 3px;
+  line-height: 1.4;
 }
 .badge {
   display: inline-block;
@@ -278,13 +399,6 @@ body {
   margin-right: 5px;
   color: #f5a623;
   vertical-align: middle;
-}
-.feedback {
-  font-size: 12px;
-  color: #444;
-  font-style: italic;
-  max-width: 200px;
-  text-align: right;
 }
 .island-empty {
   padding: 24px;
@@ -385,6 +499,6 @@ body {
   .island.open { padding: 16px; }
   .project-item { flex-direction: column; align-items: flex-start; }
   .project-status { justify-content: flex-start; max-width: 100%; width: 100%; flex-wrap: wrap; }
-  .project-status-feedback { text-align: left; }
-  .feedback { max-width: none; text-align: left; }
+  .head-right { align-items: stretch; width: 100%; }
+  .dev-box input { flex: 1; width: auto; }
 }
