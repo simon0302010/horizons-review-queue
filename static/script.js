@@ -283,43 +283,7 @@ loadStats();
 setInterval(loadStats, 30000);
 loadEvents();
 setInterval(loadEvents, 30000);
-loadQueue();
-setInterval(loadQueue, 30000);
 checkAuth();
-
-// ── Queue list ──
-async function loadQueue() {
-  const skel = document.getElementById('queue-skel');
-  const cont = document.getElementById('queue-content');
-  try {
-    const r = await fetch('/api/queue/normal');
-    if (!r.ok) throw new Error(await r.text());
-    const items = await r.json();
-    if (!items.length) {
-      skel.style.display = 'none';
-      cont.style.display = '';
-      cont.innerHTML = '<div class="island-empty">No projects in normal review.</div>';
-      return;
-    }
-    skel.style.display = 'none';
-    cont.style.display = '';
-    cont.innerHTML = items.map(function (item) {
-      var claimed = item.claimed ? '<span class="badge badge-claimed" style="margin-left:10px">Claimed</span>' : '';
-      var type = (item.projectType || '').replace(/_/g, ' ');
-      return '<div class="queue-item">' +
-        '<span class="queue-pos">#' + item.position + '</span>' +
-        '<span class="queue-title">' + escHtml(item.projectTitle || '(untitled)') + '</span>' +
-        '<span class="queue-user">' + escHtml(item.slackUserId || '') + '</span>' +
-        '<span class="queue-type">' + escHtml(type) + '</span>' +
-        claimed +
-        '</div>';
-    }).join('');
-  } catch (e) {
-    console.error('Failed to load queue:', e);
-    skel.style.display = '';
-    cont.style.display = 'none';
-  }
-}
 
 // ── Debug: Impersonation panel ──
 async function initDebugPanel() {

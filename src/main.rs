@@ -279,7 +279,14 @@ impl HorizonsClient {
                         .or_else(|| deduped[prev_idx]["createdAt"].as_str())
                         .unwrap_or("");
                     if curr_ts > prev_ts {
+                        let queue_pos = deduped[prev_idx]["queuePosition"].as_u64();
                         deduped[prev_idx] = item.clone();
+                        // Carry forward queuePosition from the item that had it
+                        if deduped[prev_idx]["queuePosition"].is_null() {
+                            if let Some(qp) = queue_pos {
+                                deduped[prev_idx]["queuePosition"] = serde_json::json!(qp);
+                            }
+                        }
                     }
                 } else {
                     seen.insert(pid, deduped.len());
@@ -980,44 +987,6 @@ async fn handle_events(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 
 // ── Dashboard HTML ──
 
-async fn handle_queue_normal(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    let queue = match state.client.get_queue().await {
-        Ok(q) => q,
-        Err(e) => {
-            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()})))
-                .into_response();
-        }
-    };
-
-    let empty = vec![];
-    let queue_arr = queue.as_array().unwrap_or(&empty);
-
-    let mut items: Vec<serde_json::Value> = Vec::new();
-    let mut pos: usize = 0;
-    for item in queue_arr {
-        let jfp = &item["project"]["joeFraudPassed"];
-        let is_normal = !jfp.is_null() && jfp.as_bool().unwrap_or(false);
-        if !is_normal {
-            continue;
-        }
-        pos += 1;
-        let mut out = serde_json::Map::new();
-        out.insert("position".into(), serde_json::json!(pos));
-        out.insert("projectTitle".into(), item["project"]["projectTitle"].clone());
-        out.insert("slackUserId".into(), item["project"]["user"]["slackUserId"].clone());
-        out.insert("projectType".into(), item["project"]["projectType"].clone());
-        out.insert("submissionId".into(), item["submissionId"].clone());
-        let claimed = !item["claim"].is_null()
-            && !item["claim"]["isStale"].as_bool().unwrap_or(true);
-        out.insert("claimed".into(), serde_json::json!(claimed));
-        items.push(serde_json::Value::Object(out));
-    }
-
-    Json(items).into_response()
-}
-
 async fn handle_dashboard() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1113,7 +1082,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/my/projects", get(handle_my_projects))
         .route("/api/debug/users", get(handle_debug_users))
         .route("/api/events", get(handle_events))
-        .route("/api/queue/normal", get(handle_queue_normal))
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());
