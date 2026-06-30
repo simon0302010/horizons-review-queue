@@ -246,23 +246,14 @@ impl HorizonsClient {
         let mut results = Vec::new();
 
         // Queue items: project.user.slackUserId, project.joeFraudPassed
-        // Track 1-based position among Normal Review items (joeFraudPassed == true).
+        // Assign a 1-based overall position in the full queue.
         if let Ok(queue) = &q {
             let empty = vec![];
             let queue_arr = queue.as_array().unwrap_or(&empty);
-            let mut normal_review_pos = 0;
-            for item in queue_arr {
-                let jfp = &item["project"]["joeFraudPassed"];
-                let is_normal = !jfp.is_null() && jfp.as_bool().unwrap_or(false);
-                if is_normal {
-                    normal_review_pos += 1;
-                    if item["project"]["user"]["slackUserId"].as_str() == Some(slack_id) {
-                        results.push(self.normalize_queue_item(item, normal_review_pos));
-                    }
-                } else {
-                    if item["project"]["user"]["slackUserId"].as_str() == Some(slack_id) {
-                        results.push(self.normalize_queue_item(item, 0)); // 0 means not in normal review queue
-                    }
+            for (i, item) in queue_arr.iter().enumerate() {
+                let overall_pos = i + 1;
+                if item["project"]["user"]["slackUserId"].as_str() == Some(slack_id) {
+                    results.push(self.normalize_queue_item(item, overall_pos));
                 }
             }
         }
@@ -292,13 +283,6 @@ impl HorizonsClient {
         // projectId comes back as a JSON number, so match on the numeric value
         // (an earlier as_str()-based key never matched and let duplicates through).
         {
-            fn proj_key(item: &serde_json::Value) -> Option<String> {
-                let pid = &item["projectId"];
-                pid.as_u64()
-                    .map(|n| n.to_string())
-                    .or_else(|| pid.as_i64().map(|n| n.to_string()))
-                    .or_else(|| pid.as_str().map(|s| s.to_string()))
-            }
             // A queue item carries createdAt (its resubmit time); a reviewed item
             // carries reviewedAt. Use whichever is present to order submissions.
             fn ts(item: &serde_json::Value) -> &str {
@@ -308,22 +292,26 @@ impl HorizonsClient {
                     .unwrap_or("")
             }
 
-            let mut seen: HashMap<String, usize> = HashMap::new();
+            let mut seen: HashMap<u64, usize> = HashMap::new();
             let mut deduped: Vec<serde_json::Value> = Vec::new();
             for item in &results {
-                let key = match proj_key(item) {
-                    Some(k) => k,
-                    None => {
-                        deduped.push(item.clone());
-                        continue;
-                    }
+                let Some(pid) = item["projectId"].as_u64() else {
+                    deduped.push(item.clone());
+                    continue;
                 };
-                if let Some(&prev_idx) = seen.get(&key) {
+                if let Some(&prev_idx) = seen.get(&pid) {
                     if ts(item) > ts(&deduped[prev_idx]) {
+                        // Preserve the queue position from whichever submission had one.
+                        let queue_pos = deduped[prev_idx]["queuePosition"].as_u64();
                         deduped[prev_idx] = item.clone();
+                        if deduped[prev_idx]["queuePosition"].is_null() {
+                            if let Some(qp) = queue_pos {
+                                deduped[prev_idx]["queuePosition"] = serde_json::json!(qp);
+                            }
+                        }
                     }
                 } else {
-                    seen.insert(key, deduped.len());
+                    seen.insert(pid, deduped.len());
                     deduped.push(item.clone());
                 }
             }
@@ -397,6 +385,98 @@ impl HorizonsClient {
         }
         let data: serde_json::Value = resp.json().await.ok()?;
         Some(data["data"]["user"]["display_name"].as_str()?.to_string())
+    }
+
+    /// Gather all unique users from queue, past_reviews, and fraud_rejected
+    async fn get_all_users(&self) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+        let (q, pr, fr) = tokio::join!(
+            self.get_queue(),
+            self.get_past_reviews(),
+            self.get_fraud_rejected(),
+        );
+
+        let mut seen: Vec<String> = Vec::new();
+
+        if let Ok(queue) = &q {
+            let empty = vec![];
+            for item in queue.as_array().unwrap_or(&empty) {
+                if let Some(sid) = item["project"]["user"]["slackUserId"].as_str() {
+                    if !seen.contains(&sid.to_string()) {
+                        seen.push(sid.to_string());
+                    }
+                }
+            }
+        }
+        if let Ok(past) = &pr {
+            let empty = vec![];
+            for item in past["reviews"].as_array().unwrap_or(&empty) {
+                if let Some(sid) = item["user"]["slackUserId"].as_str() {
+                    if !seen.contains(&sid.to_string()) {
+                        seen.push(sid.to_string());
+                    }
+                }
+            }
+        }
+        if let Ok(fraud) = &fr {
+            let empty = vec![];
+            for item in fraud.as_array().unwrap_or(&empty) {
+                if let Some(sid) = item["user"]["slackUserId"].as_str() {
+                    if !seen.contains(&sid.to_string()) {
+                        seen.push(sid.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut users = Vec::with_capacity(seen.len());
+        {
+            let mut handles = Vec::with_capacity(seen.len());
+            for sid in &seen {
+                let sid = sid.clone();
+                handles.push(tokio::spawn(async move {
+                    let client = match reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                    {
+                        Ok(c) => c,
+                        Err(_) => return (sid, None),
+                    };
+                    let url = format!("https://flaron.halceon.dev/user/{}", sid);
+                    let resp = match client.get(&url).send().await {
+                        Ok(r) => r,
+                        Err(_) => return (sid, None),
+                    };
+                    if !resp.status().is_success() {
+                        return (sid, None);
+                    }
+                    let data: serde_json::Value = match resp.json().await {
+                        Ok(v) => v,
+                        Err(_) => return (sid, None),
+                    };
+                    let dn = match data["data"]["user"]["display_name"].as_str() {
+                        Some(s) => s.to_string(),
+                        None => return (sid, None),
+                    };
+                    (sid, Some(dn))
+                }));
+            }
+            for handle in handles {
+                match handle.await {
+                    Ok((sid, Some(dn))) => users.push(serde_json::json!({"slack_id": sid, "display_name": dn})),
+                    Ok((sid, None)) => users.push(serde_json::json!({"slack_id": sid, "display_name": sid})),
+                    Err(_) => {},
+                }
+            }
+        }
+
+        users.sort_by(|a, b| {
+            a["display_name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["display_name"].as_str().unwrap_or(""))
+        });
+
+        Ok(users)
     }
 
     fn normalize_queue_item(&self, item: &serde_json::Value, queue_pos: usize) -> serde_json::Value {
@@ -473,6 +553,7 @@ struct AppState {
     pending_states: RwLock<HashMap<String, PendingState>>,
     rate_limiter: RwLock<HashMap<String, Vec<Instant>>>,
     dev_mode: bool,
+    cached_users: RwLock<Option<(Instant, Vec<serde_json::Value>)>>,
 }
 
 // ── Stats endpoint ──
@@ -969,6 +1050,34 @@ fn projects_response(projects: Vec<serde_json::Value>) -> axum::response::Respon
     Json(out).into_response()
 }
 
+/// DEV-only: list every user who has a project in the pipeline, for the
+/// dashboard's user-override autocomplete. Returns `[{slack_id, display_name}]`.
+async fn handle_dev_users(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if !state.dev_mode {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    {
+        let guard = state.cached_users.read().await;
+        if let Some((ts, data)) = &*guard {
+            if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+                return Json(data).into_response();
+            }
+        }
+    }
+    match state.client.get_all_users().await {
+        Ok(users) => {
+            let mut guard = state.cached_users.write().await;
+            guard.replace((Instant::now(), users.clone()));
+            Json(users).into_response()
+        }
+        Err(e) => {
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
 async fn handle_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.client.compute_event_stats().await {
         Ok(data) => Json(data).into_response(),
@@ -1049,6 +1158,7 @@ async fn main() -> anyhow::Result<()> {
         pending_states: RwLock::new(HashMap::new()),
         rate_limiter: RwLock::new(HashMap::new()),
         dev_mode,
+        cached_users: RwLock::new(None),
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -1071,7 +1181,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(handle_dashboard))
         .route("/style.css", get(handle_style))
         .route("/script.js", get(handle_script))
@@ -1082,8 +1192,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/logout", get(handle_auth_logout))
         .route("/api/my/projects", get(handle_my_projects))
         .route("/api/events", get(handle_events))
-        .route("/api/config", get(handle_config))
-        .with_state(state);
+        .route("/api/config", get(handle_config));
+
+    // The all-users list (for the DEV box autocomplete) is only exposed in DEV mode.
+    if dev_mode {
+        app = app.route("/api/dev/users", get(handle_dev_users));
+    }
+
+    let app = app.with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());
     let addr = format!("0.0.0.0:{}", port);

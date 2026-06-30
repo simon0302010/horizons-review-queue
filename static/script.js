@@ -2,6 +2,7 @@
 let currentUser = null;
 let devEnabled = false;   // DEV mode flag from /api/config
 let devUser = null;       // Slack ID being previewed in DEV mode
+let devUsers = [];        // [{slack_id, display_name}] for the DEV autocomplete
 
 async function checkAuth() {
   try {
@@ -369,9 +370,13 @@ async function initDevBox() {
   const input = document.getElementById('dev-user');
   box.style.display = '';
 
+  // Populate the autocomplete with every user in the pipeline. Each option's
+  // value is "Display Name · <slackId>" so typing a name filters the list;
+  // apply() pulls the trailing Slack ID back out (raw IDs still work too).
+  loadDevUsers();
+
   const apply = () => {
-    const v = input.value.trim();
-    devUser = v || null;
+    devUser = resolveDevUser(input.value);
     loadMyProjects();
   };
   document.getElementById('dev-go').addEventListener('click', apply);
@@ -388,6 +393,30 @@ async function initDevBox() {
     input.value = preset;
     apply();
   }
+}
+
+async function loadDevUsers() {
+  try {
+    const r = await fetch('/api/dev/users');
+    if (!r.ok) return;
+    devUsers = await r.json();
+  } catch { return; }
+  const list = document.getElementById('dev-user-list');
+  if (!list) return;
+  list.innerHTML = devUsers.map(u =>
+    `<option value="${escHtml(u.display_name)} · ${escHtml(u.slack_id)}"></option>`
+  ).join('');
+}
+
+// Turn the DEV box input into a Slack ID: accept "Name · U123", a raw "U123",
+// or a bare display name (resolved against the loaded user list).
+function resolveDevUser(raw) {
+  const v = (raw || '').trim();
+  if (!v) return null;
+  const sep = v.lastIndexOf('·');
+  if (sep !== -1) return v.slice(sep + 1).trim() || null;
+  const byName = devUsers.find(u => u.display_name === v);
+  return byName ? byName.slack_id : v;
 }
 
 loadStats();
