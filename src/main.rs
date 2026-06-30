@@ -1285,6 +1285,14 @@ const HTML: &str = r##"<!doctype html>
     margin-bottom: 8px;
   }
 
+  .footer {
+    text-align: center;
+    padding: 32px 40px 40px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #888;
+  }
+
   @media (max-width: 600px) {
     .head { padding: 20px 16px 0; flex-wrap: wrap; gap: 12px; }
     .page { padding: 16px; }
@@ -1375,6 +1383,8 @@ const HTML: &str = r##"<!doctype html>
     <div id="events-content" style="display:none"></div>
   </div>
 </div>
+
+<div class="footer">Copyright 2026 Simon</div>
 
 <script>
 // ── Auth state ──
