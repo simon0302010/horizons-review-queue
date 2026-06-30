@@ -263,18 +263,18 @@ impl HorizonsClient {
 
         // Deduplicate by projectId, keeping the latest submission
         {
-            let mut seen: HashMap<&str, usize> = HashMap::new();
+            let mut seen: HashMap<u64, usize> = HashMap::new();
             let mut deduped: Vec<serde_json::Value> = Vec::new();
             for item in &results {
-                let pid = item["projectId"].as_str().unwrap_or("");
-                if pid.is_empty() {
+                let pid = item["projectId"].as_u64();
+                let Some(pid) = pid else {
                     deduped.push(item.clone());
                     continue;
-                }
+                };
                 let curr_ts = item["reviewedAt"].as_str()
                     .or_else(|| item["createdAt"].as_str())
                     .unwrap_or("");
-                if let Some(&prev_idx) = seen.get(pid) {
+                if let Some(&prev_idx) = seen.get(&pid) {
                     let prev_ts = deduped[prev_idx]["reviewedAt"].as_str()
                         .or_else(|| deduped[prev_idx]["createdAt"].as_str())
                         .unwrap_or("");
