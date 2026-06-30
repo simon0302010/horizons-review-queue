@@ -287,85 +287,40 @@ checkAuth();
 
 // ── Debug: Impersonation panel ──
 async function initDebugPanel() {
-  const panel = document.getElementById('debug-panel');
-  panel.style.display = '';
+  document.getElementById('debug-panel').style.display = '';
 
+  let users;
   try {
     const r = await fetch('/api/debug/users');
-    if (!r.ok) throw new Error(await r.text());
-    allUsers = await r.json();
+    users = await r.json();
   } catch (e) {
-    document.getElementById('debug-user-list').innerHTML =
-      `<div class="island-error">Failed to load users: ${escHtml(e.message)}</div>`;
     return;
   }
+  allUsers = users;
 
-  const search = document.getElementById('debug-user-search');
-  const list = document.getElementById('debug-user-list');
-
-  function filterUsers(query) {
-    return query
-      ? allUsers.filter(u =>
-          (u.display_name || '').toLowerCase().includes(query.toLowerCase()) ||
-          (u.slack_id || '').toLowerCase().includes(query.toLowerCase()))
-      : allUsers;
+  var datalist = document.getElementById('debug-user-datalist');
+  for (var i = 0; i < users.length; i++) {
+    var opt = document.createElement('option');
+    opt.value = users[i].display_name + ' (' + users[i].slack_id + ')';
+    datalist.appendChild(opt);
   }
 
-  function render(query) {
-    const matched = filterUsers(query);
-    const display = document.getElementById('debug-current');
-
-    if (impersonating) {
-      const u = allUsers.find(x => x.slack_id === impersonating);
-      display.textContent = u
-        ? 'Impersonating: ' + u.display_name + ' (' + u.slack_id + ')'
-        : 'Impersonating: ' + impersonating;
-      display.style.display = '';
-    } else {
-      display.style.display = 'none';
+  var search = document.getElementById('debug-user-search');
+  search.addEventListener('change', function () {
+    var match = this.value.match(/\((.+)\)$/);
+    if (!match) {
+      impersonating = null;
+      document.getElementById('debug-current').style.display = 'none';
+      loadMyProjects();
+      return;
     }
-
-    list.innerHTML = matched.map(u => {
-      const active = u.slack_id === impersonating ? ' active' : '';
-      return '<div class="debug-user-item' + active + '" data-sid="' + escHtml(u.slack_id) + '">'
-        + escHtml(u.display_name) + '<span class="sid">' + escHtml(u.slack_id) + '</span></div>';
-    }).join('');
-
-    if (matched.length > 0) {
-      list.classList.add('open');
-    } else {
-      list.classList.remove('open');
+    var sid = match[1];
+    impersonating = sid;
+    var u = users.find(function (x) { return x.slack_id === sid; });
+    if (u) {
+      document.getElementById('debug-current').textContent = 'Impersonating: ' + u.display_name + ' (' + sid + ')';
+      document.getElementById('debug-current').style.display = '';
     }
-  }
-
-  search.addEventListener('input', function () {
-    render(this.value);
-  });
-
-  search.addEventListener('focus', function () {
-    if (allUsers.length > 0) list.classList.add('open');
-  });
-
-  search.addEventListener('blur', function () {
-    setTimeout(function () { list.classList.remove('open'); }, 150);
-  });
-
-  list.addEventListener('mousedown', function (e) {
-    var item = e.target.closest('.debug-user-item');
-    if (!item) return;
-    e.preventDefault();
-    var sid = item.dataset.sid;
-    impersonating = impersonating === sid ? null : sid;
-    if (impersonating) {
-      var u = allUsers.find(function (x) { return x.slack_id === sid; });
-      search.value = u ? u.display_name : sid;
-    } else {
-      search.value = '';
-    }
-    list.classList.remove('open');
-    render(search.value);
     loadMyProjects();
   });
-
-  render('');
 }
