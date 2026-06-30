@@ -351,12 +351,44 @@ impl HorizonsClient {
         }
 
         let mut users = Vec::with_capacity(seen.len());
-        for sid in &seen {
-            let display_name = self.get_display_name(sid).await;
-            users.push(serde_json::json!({
-                "slack_id": sid,
-                "display_name": display_name.unwrap_or_else(|| sid.clone()),
-            }));
+        {
+            let mut handles = Vec::with_capacity(seen.len());
+            for sid in &seen {
+                let sid = sid.clone();
+                handles.push(tokio::spawn(async move {
+                    let client = match reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                    {
+                        Ok(c) => c,
+                        Err(_) => return (sid, None),
+                    };
+                    let url = format!("https://flaron.halceon.dev/user/{}", sid);
+                    let resp = match client.get(&url).send().await {
+                        Ok(r) => r,
+                        Err(_) => return (sid, None),
+                    };
+                    if !resp.status().is_success() {
+                        return (sid, None);
+                    }
+                    let data: serde_json::Value = match resp.json().await {
+                        Ok(v) => v,
+                        Err(_) => return (sid, None),
+                    };
+                    let dn = match data["data"]["user"]["display_name"].as_str() {
+                        Some(s) => s.to_string(),
+                        None => return (sid, None),
+                    };
+                    (sid, Some(dn))
+                }));
+            }
+            for handle in handles {
+                match handle.await {
+                    Ok((sid, Some(dn))) => users.push(serde_json::json!({"slack_id": sid, "display_name": dn})),
+                    Ok((sid, None)) => users.push(serde_json::json!({"slack_id": sid, "display_name": sid})),
+                    Err(_) => {},
+                }
+            }
         }
 
         users.sort_by(|a, b| {

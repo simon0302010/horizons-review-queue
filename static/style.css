@@ -391,6 +391,7 @@ body {
 
 /* ── Debug panel ── */
 #debug-panel .page { max-width: 780px; margin: 0 auto; }
+.debug-combo { position: relative; }
 #debug-user-search {
   width: 100%;
   padding: 10px 14px;
@@ -401,34 +402,37 @@ body {
   font-weight: 600;
   background: #fff8ee;
   outline: none;
-  margin-bottom: 12px;
 }
 #debug-user-search:focus { box-shadow: 0 0 0 3px rgba(0,0,0,0.15); }
-#debug-user-list {
-  display: flex;
+.debug-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: none;
   flex-direction: column;
-  gap: 4px;
-  max-height: 300px;
+  max-height: 280px;
   overflow-y: auto;
-}
-.debug-user-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  border: 2px solid #000;
-  border-radius: 10px;
+  border: 3px solid #000;
+  border-top: none;
+  border-radius: 0 0 12px 12px;
   background: #fff8ee;
+}
+.debug-list.open { display: flex; }
+.debug-user-item {
+  padding: 8px 14px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.1s ease;
+  border-bottom: 1px solid #ddd;
 }
-.debug-user-item:hover { transform: scale(1.01); background: #f3e8d8; }
+.debug-user-item:last-child { border-bottom: none; }
+.debug-user-item:hover { background: #f3e8d8; }
 .debug-user-item.active { background: #f5a623; color: #000; }
-.debug-user-item .sid { font-weight: 400; font-size: 11px; color: #666; }
+.debug-user-item .sid { font-weight: 400; font-size: 11px; color: #666; margin-left: 8px; }
 .debug-current {
-  margin-top: 8px;
+  margin-top: 10px;
   padding: 8px 14px;
   border: 2px dashed #000;
   border-radius: 10px;

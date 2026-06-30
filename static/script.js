@@ -294,49 +294,78 @@ async function initDebugPanel() {
     const r = await fetch('/api/debug/users');
     if (!r.ok) throw new Error(await r.text());
     allUsers = await r.json();
-    renderDebugUsers();
   } catch (e) {
     document.getElementById('debug-user-list').innerHTML =
       `<div class="island-error">Failed to load users: ${escHtml(e.message)}</div>`;
+    return;
   }
 
   const search = document.getElementById('debug-user-search');
-  search.addEventListener('input', () => renderDebugUsers(search.value));
-}
-
-function renderDebugUsers(filter) {
   const list = document.getElementById('debug-user-list');
-  const display = document.getElementById('debug-current');
-  const matched = filter
-    ? allUsers.filter(u =>
-        (u.display_name || '').toLowerCase().includes(filter.toLowerCase()) ||
-        (u.slack_id || '').toLowerCase().includes(filter.toLowerCase()))
-    : allUsers;
 
-  if (impersonating) {
-    const u = allUsers.find(x => x.slack_id === impersonating);
-    display.textContent = u
-      ? `Impersonating: ${u.display_name} (${u.slack_id})`
-      : `Impersonating: ${impersonating}`;
-    display.style.display = '';
-  } else {
-    display.style.display = 'none';
+  function filterUsers(query) {
+    return query
+      ? allUsers.filter(u =>
+          (u.display_name || '').toLowerCase().includes(query.toLowerCase()) ||
+          (u.slack_id || '').toLowerCase().includes(query.toLowerCase()))
+      : allUsers;
   }
 
-  list.innerHTML = matched.map(u => {
-    const active = u.slack_id === impersonating ? ' active' : '';
-    return `<div class="debug-user-item${active}" data-sid="${escHtml(u.slack_id)}">
-      <span>${escHtml(u.display_name)}</span>
-      <span class="sid">${escHtml(u.slack_id)}</span>
-    </div>`;
-  }).join('');
+  function render(query) {
+    const matched = filterUsers(query);
+    const display = document.getElementById('debug-current');
 
-  list.querySelectorAll('.debug-user-item').forEach(el => {
-    el.addEventListener('click', () => {
-      const sid = el.dataset.sid;
-      impersonating = impersonating === sid ? null : sid;
-      renderDebugUsers(document.getElementById('debug-user-search').value);
-      loadMyProjects();
-    });
+    if (impersonating) {
+      const u = allUsers.find(x => x.slack_id === impersonating);
+      display.textContent = u
+        ? 'Impersonating: ' + u.display_name + ' (' + u.slack_id + ')'
+        : 'Impersonating: ' + impersonating;
+      display.style.display = '';
+    } else {
+      display.style.display = 'none';
+    }
+
+    list.innerHTML = matched.map(u => {
+      const active = u.slack_id === impersonating ? ' active' : '';
+      return '<div class="debug-user-item' + active + '" data-sid="' + escHtml(u.slack_id) + '">'
+        + escHtml(u.display_name) + '<span class="sid">' + escHtml(u.slack_id) + '</span></div>';
+    }).join('');
+
+    if (matched.length > 0) {
+      list.classList.add('open');
+    } else {
+      list.classList.remove('open');
+    }
+  }
+
+  search.addEventListener('input', function () {
+    render(this.value);
   });
+
+  search.addEventListener('focus', function () {
+    if (allUsers.length > 0) list.classList.add('open');
+  });
+
+  search.addEventListener('blur', function () {
+    setTimeout(function () { list.classList.remove('open'); }, 150);
+  });
+
+  list.addEventListener('mousedown', function (e) {
+    var item = e.target.closest('.debug-user-item');
+    if (!item) return;
+    e.preventDefault();
+    var sid = item.dataset.sid;
+    impersonating = impersonating === sid ? null : sid;
+    if (impersonating) {
+      var u = allUsers.find(function (x) { return x.slack_id === sid; });
+      search.value = u ? u.display_name : sid;
+    } else {
+      search.value = '';
+    }
+    list.classList.remove('open');
+    render(search.value);
+    loadMyProjects();
+  });
+
+  render('');
 }
