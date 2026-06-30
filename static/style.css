@@ -391,24 +391,3 @@ body {
 
 /* ── Debug panel ── */
 #debug-panel .page { max-width: 780px; margin: 0 auto; }
-#debug-user-search {
-  width: 100%;
-  padding: 10px 14px;
-  border: 3px solid #000;
-  border-radius: 12px;
-  font-family: 'Bricolage Grotesque', sans-serif;
-  font-size: 14px;
-  font-weight: 600;
-  background: #fff8ee;
-  outline: none;
-}
-#debug-user-search:focus { box-shadow: 0 0 0 3px rgba(0,0,0,0.15); }
-#debug-current {
-  margin-top: 10px;
-  padding: 8px 14px;
-  border: 2px dashed #000;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  background: #fff8ee;
-}

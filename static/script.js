@@ -289,38 +289,26 @@ checkAuth();
 async function initDebugPanel() {
   document.getElementById('debug-panel').style.display = '';
 
-  let users;
-  try {
-    const r = await fetch('/api/debug/users');
-    users = await r.json();
-  } catch (e) {
-    return;
-  }
-  allUsers = users;
+  var input = document.getElementById('debug-slack-id');
+  var btn = document.getElementById('debug-impersonate-btn');
 
-  var datalist = document.getElementById('debug-user-datalist');
-  for (var i = 0; i < users.length; i++) {
-    var opt = document.createElement('option');
-    opt.value = users[i].display_name + ' (' + users[i].slack_id + ')';
-    datalist.appendChild(opt);
-  }
-
-  var search = document.getElementById('debug-user-search');
-  search.addEventListener('change', function () {
-    var match = this.value.match(/\((.+)\)$/);
-    if (!match) {
+  function doImpersonate() {
+    var sid = input.value.trim();
+    if (!sid) {
       impersonating = null;
       document.getElementById('debug-current').style.display = 'none';
       loadMyProjects();
       return;
     }
-    var sid = match[1];
     impersonating = sid;
-    var u = users.find(function (x) { return x.slack_id === sid; });
-    if (u) {
-      document.getElementById('debug-current').textContent = 'Impersonating: ' + u.display_name + ' (' + sid + ')';
-      document.getElementById('debug-current').style.display = '';
-    }
+    var display = document.getElementById('debug-current');
+    display.textContent = 'Impersonating: ' + sid;
+    display.style.display = '';
     loadMyProjects();
+  }
+
+  btn.addEventListener('click', doImpersonate);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') doImpersonate();
   });
 }

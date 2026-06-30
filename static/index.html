@@ -86,9 +86,11 @@
   <div class="page">
     <div class="card">
       <div class="card-title">Debug: Impersonate User</div>
-      <input type="text" id="debug-user-search" placeholder="Search and select a user...">
-      <datalist id="debug-user-datalist"></datalist>
-      <div id="debug-current" style="display:none"></div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="debug-slack-id" placeholder="Paste Slack ID..." style="flex:1">
+        <button id="debug-impersonate-btn" class="hca-btn" style="padding:10px 16px;font-size:13px">Impersonate</button>
+      </div>
+      <div id="debug-current" style="display:none;margin-top:10px;padding:8px 14px;border:2px dashed #000;border-radius:10px;font-size:13px;font-weight:600;background:#fff8ee"></div>
     </div>
   </div>
 </div>
