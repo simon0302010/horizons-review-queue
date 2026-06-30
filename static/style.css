@@ -488,6 +488,13 @@ body {
   font-weight: 500;
   color: #888;
 }
+.footer-link {
+  color: #ec3750;
+  font-weight: 700;
+  text-decoration: none;
+}
+.footer-link:hover { text-decoration: underline; }
+.footer-sep { margin: 0 8px; color: #bbb; }
 
 @media (max-width: 600px) {
   .head { padding: 20px 16px 0; flex-wrap: wrap; gap: 12px; }
