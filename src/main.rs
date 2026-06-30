@@ -1061,7 +1061,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(handle_dashboard))
         .route("/style.css", get(handle_style))
         .route("/script.js", get(handle_script))
@@ -1071,9 +1071,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/me", get(handle_auth_me))
         .route("/api/auth/logout", get(handle_auth_logout))
         .route("/api/my/projects", get(handle_my_projects))
-        .route("/api/debug/users", get(handle_debug_users))
-        .route("/api/events", get(handle_events))
-        .with_state(state);
+        .route("/api/events", get(handle_events));
+
+    if debug {
+        app = app.route("/api/debug/users", get(handle_debug_users));
+    }
+
+    let app = app.with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());
     let addr = format!("0.0.0.0:{}", port);
