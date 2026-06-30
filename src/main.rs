@@ -219,23 +219,14 @@ impl HorizonsClient {
         let mut results = Vec::new();
 
         // Queue items: project.user.slackUserId, project.joeFraudPassed
-        // Track 1-based position among Normal Review items (joeFraudPassed == true).
+        // Assign a 1-based overall position in the full queue.
         if let Ok(queue) = &q {
             let empty = vec![];
             let queue_arr = queue.as_array().unwrap_or(&empty);
-            let mut normal_review_pos = 0;
-            for item in queue_arr {
-                let jfp = &item["project"]["joeFraudPassed"];
-                let is_normal = !jfp.is_null() && jfp.as_bool().unwrap_or(false);
-                if is_normal {
-                    normal_review_pos += 1;
-                    if item["project"]["user"]["slackUserId"].as_str() == Some(slack_id) {
-                        results.push(self.normalize_queue_item(item, normal_review_pos));
-                    }
-                } else {
-                    if item["project"]["user"]["slackUserId"].as_str() == Some(slack_id) {
-                        results.push(self.normalize_queue_item(item, 0)); // 0 means not in normal review queue
-                    }
+            for (i, item) in queue_arr.iter().enumerate() {
+                let overall_pos = i + 1;
+                if item["project"]["user"]["slackUserId"].as_str() == Some(slack_id) {
+                    results.push(self.normalize_queue_item(item, overall_pos));
                 }
             }
         }
