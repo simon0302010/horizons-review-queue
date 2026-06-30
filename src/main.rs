@@ -309,6 +309,66 @@ impl HorizonsClient {
         Some(data["data"]["user"]["display_name"].as_str()?.to_string())
     }
 
+    /// Gather all unique users from queue, past_reviews, and fraud_rejected
+    async fn get_all_users(&self) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+        let (q, pr, fr) = tokio::join!(
+            self.get_queue(),
+            self.get_past_reviews(),
+            self.get_fraud_rejected(),
+        );
+
+        let mut seen: Vec<String> = Vec::new();
+
+        if let Ok(queue) = &q {
+            let empty = vec![];
+            for item in queue.as_array().unwrap_or(&empty) {
+                if let Some(sid) = item["project"]["user"]["slackUserId"].as_str() {
+                    if !seen.contains(&sid.to_string()) {
+                        seen.push(sid.to_string());
+                    }
+                }
+            }
+        }
+        if let Ok(past) = &pr {
+            let empty = vec![];
+            for item in past["reviews"].as_array().unwrap_or(&empty) {
+                if let Some(sid) = item["user"]["slackUserId"].as_str() {
+                    if !seen.contains(&sid.to_string()) {
+                        seen.push(sid.to_string());
+                    }
+                }
+            }
+        }
+        if let Ok(fraud) = &fr {
+            let empty = vec![];
+            for item in fraud.as_array().unwrap_or(&empty) {
+                if let Some(sid) = item["user"]["slackUserId"].as_str() {
+                    if !seen.contains(&sid.to_string()) {
+                        seen.push(sid.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut users = Vec::with_capacity(seen.len());
+        for sid in &seen {
+            let display_name = self.get_display_name(sid).await;
+            users.push(serde_json::json!({
+                "slack_id": sid,
+                "display_name": display_name.unwrap_or_else(|| sid.clone()),
+            }));
+        }
+
+        users.sort_by(|a, b| {
+            a["display_name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["display_name"].as_str().unwrap_or(""))
+        });
+
+        Ok(users)
+    }
+
     fn normalize_queue_item(&self, item: &serde_json::Value, queue_pos: usize) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         out.insert("projectId".into(), item["projectId"].clone());
@@ -382,6 +442,8 @@ struct AppState {
     sessions: RwLock<HashMap<String, UserSession>>,
     pending_states: RwLock<HashMap<String, PendingState>>,
     rate_limiter: RwLock<HashMap<String, Vec<Instant>>>,
+    debug: bool,
+    cached_users: RwLock<Option<(Instant, Vec<serde_json::Value>)>>,
 }
 
 // ── Stats endpoint ──
@@ -737,6 +799,7 @@ async fn handle_auth_me(
                 "sub": session.sub,
                 "slack_id": session.slack_id,
                 "display_name": session.display_name,
+                "debug": state.debug,
             }))
             .into_response()
         }
@@ -765,40 +828,57 @@ async fn handle_auth_logout(
 async fn handle_my_projects(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let sid = match get_session_id(&headers) {
-        Some(s) => s,
-        None => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"})))
-                .into_response();
-        }
-    };
-
-    let session = {
-        let mut sessions = state.sessions.write().await;
-        let entry = sessions.get(&sid).cloned();
-        if let Some(ref s) = entry {
-            if s.created_at.elapsed().as_secs() > SESSION_TTL_SECS {
-                sessions.remove(&sid);
-                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "session expired"})))
-                    .into_response();
+    let slack_id = if state.debug {
+        if let Some(imp) = params.get("impersonate") {
+            imp.clone()
+        } else {
+            let sid = match get_session_id(&headers) {
+                Some(s) => s,
+                None => {
+                    return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"})))
+                        .into_response();
+                }
+            };
+            let sessions = state.sessions.read().await;
+            let session = match sessions.get(&sid) {
+                Some(s) => s,
+                None => {
+                    return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid session"})))
+                        .into_response();
+                }
+            };
+            match session.slack_id.clone() {
+                Some(id) => id,
+                None => {
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no slack_id"})))
+                        .into_response();
+                }
             }
         }
-        entry
-    };
-    let session = match session {
-        Some(s) => s,
-        None => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid session"})))
-                .into_response();
-        }
-    };
-
-    let slack_id = match session.slack_id {
-        Some(ref id) => id.clone(),
-        None => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no slack_id"})))
-                .into_response();
+    } else {
+        let sid = match get_session_id(&headers) {
+            Some(s) => s,
+            None => {
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"})))
+                    .into_response();
+            }
+        };
+        let sessions = state.sessions.read().await;
+        let session = match sessions.get(&sid) {
+            Some(s) => s,
+            None => {
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid session"})))
+                    .into_response();
+            }
+        };
+        match session.slack_id.clone() {
+            Some(id) => id,
+            None => {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no slack_id"})))
+                    .into_response();
+            }
         }
     };
 
@@ -839,6 +919,32 @@ async fn handle_my_projects(
     }
 
     Json(out).into_response()
+}
+
+async fn handle_debug_users(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if !state.debug {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    {
+        let guard = state.cached_users.read().await;
+        if let Some((ts, data)) = &*guard {
+            if ts.elapsed().as_secs() < CACHE_TTL_SECS {
+                return Json(data).into_response();
+            }
+        }
+    }
+    match state.client.get_all_users().await {
+        Ok(users) => {
+            let mut guard = state.cached_users.write().await;
+            guard.replace((Instant::now(), users.clone()));
+            Json(users).into_response()
+        }
+        Err(e) => {
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
 }
 
 async fn handle_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -895,6 +1001,8 @@ fn urlencoding(input: &str) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let debug = std::env::args().any(|a| a == "--debug");
+
     let hca_client_id =
         std::env::var("HCA_CLIENT_ID").map_err(|_| anyhow::anyhow!("HCA_CLIENT_ID not set"))?;
     let hca_client_secret = std::env::var("HCA_CLIENT_SECRET")
@@ -911,6 +1019,8 @@ async fn main() -> anyhow::Result<()> {
         sessions: RwLock::new(HashMap::new()),
         pending_states: RwLock::new(HashMap::new()),
         rate_limiter: RwLock::new(HashMap::new()),
+        debug,
+        cached_users: RwLock::new(None),
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -943,6 +1053,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/me", get(handle_auth_me))
         .route("/api/auth/logout", get(handle_auth_logout))
         .route("/api/my/projects", get(handle_my_projects))
+        .route("/api/debug/users", get(handle_debug_users))
         .route("/api/events", get(handle_events))
         .with_state(state);
 

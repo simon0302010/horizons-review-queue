@@ -1,5 +1,7 @@
 // ── Auth state ──
 let currentUser = null;
+let impersonating = null;
+let allUsers = [];
 
 async function checkAuth() {
   try {
@@ -8,6 +10,7 @@ async function checkAuth() {
       currentUser = await r.json();
       renderUser();
       loadMyProjects();
+      if (currentUser.debug) initDebugPanel();
     } else {
       currentUser = null;
       renderUser();
@@ -63,7 +66,8 @@ async function loadMyProjects() {
   content.innerHTML = '<div class="island-loading">Loading your projects...</div>';
 
   try {
-    const r = await fetch('/api/my/projects');
+    const url = impersonating ? `/api/my/projects?impersonate=${encodeURIComponent(impersonating)}` : '/api/my/projects';
+    const r = await fetch(url);
     if (!r.ok) throw new Error(await r.text());
     const projects = await r.json();
 
@@ -280,3 +284,59 @@ setInterval(loadStats, 30000);
 loadEvents();
 setInterval(loadEvents, 30000);
 checkAuth();
+
+// ── Debug: Impersonation panel ──
+async function initDebugPanel() {
+  const panel = document.getElementById('debug-panel');
+  panel.style.display = '';
+
+  try {
+    const r = await fetch('/api/debug/users');
+    if (!r.ok) throw new Error(await r.text());
+    allUsers = await r.json();
+    renderDebugUsers();
+  } catch (e) {
+    document.getElementById('debug-user-list').innerHTML =
+      `<div class="island-error">Failed to load users: ${escHtml(e.message)}</div>`;
+  }
+
+  const search = document.getElementById('debug-user-search');
+  search.addEventListener('input', () => renderDebugUsers(search.value));
+}
+
+function renderDebugUsers(filter) {
+  const list = document.getElementById('debug-user-list');
+  const display = document.getElementById('debug-current');
+  const matched = filter
+    ? allUsers.filter(u =>
+        (u.display_name || '').toLowerCase().includes(filter.toLowerCase()) ||
+        (u.slack_id || '').toLowerCase().includes(filter.toLowerCase()))
+    : allUsers;
+
+  if (impersonating) {
+    const u = allUsers.find(x => x.slack_id === impersonating);
+    display.textContent = u
+      ? `Impersonating: ${u.display_name} (${u.slack_id})`
+      : `Impersonating: ${impersonating}`;
+    display.style.display = '';
+  } else {
+    display.style.display = 'none';
+  }
+
+  list.innerHTML = matched.map(u => {
+    const active = u.slack_id === impersonating ? ' active' : '';
+    return `<div class="debug-user-item${active}" data-sid="${escHtml(u.slack_id)}">
+      <span>${escHtml(u.display_name)}</span>
+      <span class="sid">${escHtml(u.slack_id)}</span>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.debug-user-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const sid = el.dataset.sid;
+      impersonating = impersonating === sid ? null : sid;
+      renderDebugUsers(document.getElementById('debug-user-search').value);
+      loadMyProjects();
+    });
+  });
+}
