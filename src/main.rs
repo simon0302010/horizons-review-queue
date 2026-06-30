@@ -779,6 +779,16 @@ async fn handle_auth_me(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    if state.debug {
+        return Json(serde_json::json!({
+            "sub": "debug",
+            "slack_id": null,
+            "display_name": "Debug Mode",
+            "debug": true,
+        }))
+        .into_response();
+    }
+
     let sid = match get_session_id(&headers) {
         Some(s) => s,
         None => {
@@ -831,31 +841,9 @@ async fn handle_my_projects(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let slack_id = if state.debug {
-        if let Some(imp) = params.get("impersonate") {
-            imp.clone()
-        } else {
-            let sid = match get_session_id(&headers) {
-                Some(s) => s,
-                None => {
-                    return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"})))
-                        .into_response();
-                }
-            };
-            let sessions = state.sessions.read().await;
-            let session = match sessions.get(&sid) {
-                Some(s) => s,
-                None => {
-                    return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid session"})))
-                        .into_response();
-                }
-            };
-            match session.slack_id.clone() {
-                Some(id) => id,
-                None => {
-                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no slack_id"})))
-                        .into_response();
-                }
-            }
+        match params.get("impersonate") {
+            Some(imp) => imp.clone(),
+            None => return Json(Vec::<serde_json::Value>::new()).into_response(),
         }
     } else {
         let sid = match get_session_id(&headers) {
