@@ -2,6 +2,8 @@
 
 A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Axum, it shows pipeline statistics, per-user projects across all review stages, and event-level approved hours.
 
+![Screenshot](screenshot.png)
+
 ## Features
 
 - **Pipeline overview** -- pending review counts for fraud and normal review, displayed as a stacked bar chart
