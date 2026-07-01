@@ -1021,13 +1021,6 @@ async fn handle_my_projects(
                     }
                 }
             }
-            // Clean up approved priority reviews for projects that left the queue
-            {
-                let active_ids: HashSet<u64> = projects.iter()
-                    .filter_map(|p| p["projectId"].as_u64()).collect();
-                let mut approved = state.priority_review_approved.write().await;
-                approved.retain(|a| active_ids.contains(&a.project_id));
-            }
             projects_response(projects)
         }
         Err(e) => (
@@ -1525,17 +1518,24 @@ async fn handle_priority_review_approved(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid or missing API key — send Authorization: Bearer <key> or ?key=<key>"}))).into_response();
     }
 
-    let active_ids = state.client.get_queue().await.ok().and_then(|q| {
-        q.as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|item| item["projectId"].as_u64())
+    // Only remove from the approved list once the project is normal-review approved
+    // (reviewPassed && approvalStatus == "approved"), not just when it leaves the queue.
+    let normally_approved_ids = state.client.get_past_reviews().await.ok().and_then(|pr| {
+        pr["reviews"].as_array().map(|reviews| {
+            reviews
+                .iter()
+                .filter(|r| {
+                    r["reviewPassed"].as_bool().unwrap_or(false)
+                        && r["approvalStatus"].as_str().unwrap_or("") == "approved"
+                })
+                .filter_map(|r| r["projectId"].as_u64())
                 .collect::<std::collections::HashSet<u64>>()
         })
     });
 
     let approved = state.priority_review_approved.read().await;
-    let filtered: Vec<&PriorityReviewApproval> = match active_ids {
-        Some(ref ids) => approved.iter().filter(|a| ids.contains(&a.project_id)).collect(),
+    let filtered: Vec<&PriorityReviewApproval> = match normally_approved_ids {
+        Some(ref ids) => approved.iter().filter(|a| !ids.contains(&a.project_id)).collect(),
         None => approved.iter().collect(),
     };
 
