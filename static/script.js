@@ -454,6 +454,7 @@ async function initDevBox() {
     input.value = preset;
     apply();
   }
+}
 
 async function loadDevUsers() {
   try {
