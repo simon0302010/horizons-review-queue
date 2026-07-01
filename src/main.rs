@@ -477,6 +477,7 @@ impl HorizonsClient {
         out.insert("submissionId".into(), item["submissionId"].clone());
         out.insert("source".into(), serde_json::json!("queue"));
         out.insert("status".into(), serde_json::json!("pending"));
+        out.insert("joeFraudPassed".into(), item["project"]["joeFraudPassed"].clone());
         // Overall 1-based position in the queue (oldest = #1)
         out.insert("queuePosition".into(), serde_json::json!(queue_pos));
 
