@@ -1241,17 +1241,30 @@ async fn handle_priority_review(
     }
 
     // Verify the project belongs to the user and is eligible: it must be a queue
-    // project that has passed fraud and is in regular ("Normal") review.
-    let project_title = match state.client.find_user_projects(&slack_id).await {
+    // project that has passed fraud and is in regular ("Normal") review. Also pull
+    // the project type and submitted hours to show in the Slack message.
+    let (project_title, project_type, hours) = match state.client.find_user_projects(&slack_id).await {
         Ok(projects) => {
             match projects.iter().find(|p| {
                 p["projectId"].as_u64() == Some(project_id)
                     && p["source"].as_str() == Some("queue")
             }) {
-                Some(p) if p["reviewStage"].as_str() == Some("Normal Review") => p["projectTitle"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("Project #{}", project_id)),
+                Some(p) if p["reviewStage"].as_str() == Some("Normal Review") => {
+                    let title = p["projectTitle"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("Project #{}", project_id));
+                    let ptype = p["projectType"].as_str().unwrap_or("").replace('_', " ");
+                    // Hours come from the newest timeline event that carries them.
+                    let hours = p["timeline"].as_array().and_then(|tl| {
+                        tl.iter().find_map(|e| {
+                            e["approvedHours"].as_f64()
+                                .or_else(|| e["submittedHours"].as_f64())
+                                .or_else(|| e["hours"].as_f64())
+                        })
+                    });
+                    (title, ptype, hours)
+                }
                 Some(_) => {
                     return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project is not in regular review yet"}))).into_response();
                 }
@@ -1287,6 +1300,14 @@ async fn handle_priority_review(
                     {
                         "type": "mrkdwn",
                         "text": format!("*Project ID:*\n{}", project_id)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Type:*\n{}", if project_type.is_empty() { "—".to_string() } else { project_type })
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Hours:*\n{}", hours.map(|h| format!("{}h", h)).unwrap_or_else(|| "—".to_string()))
                     }
                 ]
             },
