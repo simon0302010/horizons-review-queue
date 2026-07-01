@@ -1518,28 +1518,32 @@ async fn handle_priority_review_approved(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid or missing API key — send Authorization: Bearer <key> or ?key=<key>"}))).into_response();
     }
 
-    // Only remove from the approved list once the project is normal-review approved
-    // (reviewPassed && approvalStatus == "approved"), not just when it leaves the queue.
-    let normally_approved_ids = state.client.get_past_reviews().await.ok().and_then(|pr| {
-        pr["reviews"].as_array().map(|reviews| {
-            reviews
+    // A project stays on the approved list until it clears *normal* review
+    // (reviewPassed && approvalStatus == "approved"), not merely when it leaves
+    // the queue. Prune those entries here (write-side) rather than re-filtering a
+    // growing vec on every request — this keeps the stored list bounded. The
+    // past-reviews fetch is cached (60s), so this stays cheap. If the fetch
+    // fails we skip pruning and return the list as-is.
+    if let Ok(pr) = state.client.get_past_reviews().await {
+        if let Some(reviews) = pr["reviews"].as_array() {
+            let normally_approved: std::collections::HashSet<u64> = reviews
                 .iter()
                 .filter(|r| {
                     r["reviewPassed"].as_bool().unwrap_or(false)
                         && r["approvalStatus"].as_str().unwrap_or("") == "approved"
                 })
                 .filter_map(|r| r["projectId"].as_u64())
-                .collect::<std::collections::HashSet<u64>>()
-        })
-    });
+                .collect();
+
+            if !normally_approved.is_empty() {
+                let mut approved = state.priority_review_approved.write().await;
+                approved.retain(|a| !normally_approved.contains(&a.project_id));
+            }
+        }
+    }
 
     let approved = state.priority_review_approved.read().await;
-    let filtered: Vec<&PriorityReviewApproval> = match normally_approved_ids {
-        Some(ref ids) => approved.iter().filter(|a| !ids.contains(&a.project_id)).collect(),
-        None => approved.iter().collect(),
-    };
-
-    (StatusCode::OK, Json(serde_json::json!({ "approved": filtered }))).into_response()
+    (StatusCode::OK, Json(serde_json::json!({ "approved": &*approved }))).into_response()
 }
 
 // ── URL encoding helper ──
