@@ -1586,7 +1586,7 @@ async fn handle_priority_review_approved(
     }
 
     let records = state.priority_review.read().await;
-    let list: Vec<&PriorityReviewEntry> = records.values().collect();
+    let list: Vec<&PriorityReviewEntry> = records.values().filter(|e| matches!(e.status, PriorityReviewStatus::Approved)).collect();
     (StatusCode::OK, Json(serde_json::json!({ "approved": list }))).into_response()
 }
 
