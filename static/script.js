@@ -39,6 +39,7 @@ async function checkAuth() {
       renderUser();
       await loadConfig();
       loadMyProjects();
+      loadEnvStatus();
     } else {
       currentUser = null;
       renderUser();
@@ -458,6 +459,8 @@ async function initDevBox() {
   // Fetch env status for admins
   loadEnvStatus();
 }
+
+/** Re-evaluate env status — called after auth changes too. */
 
 async function loadEnvStatus() {
   try {
