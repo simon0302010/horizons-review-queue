@@ -120,7 +120,7 @@ async function loadMyProjects() {
 
     // Track which projects have already requested priority review
     priorityRequested = new Set();
-    priorityProjects = projects.filter(p => p.source === 'queue');
+    priorityProjects = projects.filter(p => p.source === 'queue' && getFraudStatus(p) === 'Approved');
     for (const p of projects) {
       if (p.priorityReviewRequested) {
         priorityRequested.add(p.projectId);
