@@ -388,15 +388,19 @@ document.getElementById('projects-content').addEventListener('click', (e) => {
 
 // ── DEV user-override box ──
 async function initDevBox() {
+  let isDev = false;
   try {
     const r = await fetch('/api/config');
     const d = await r.json();
-    devEnabled = !!d.dev;
+    devEnabled = !!d.impersonate;   // DEV mode OR a logged-in admin
+    isDev = !!d.dev;
   } catch { devEnabled = false; }
   if (!devEnabled) return;
 
   const box = document.getElementById('dev-box');
   const input = document.getElementById('dev-user');
+  const tag = box.querySelector('.dev-tag');
+  if (tag) tag.textContent = isDev ? 'DEV' : 'ADMIN';
   box.style.display = '';
 
   // The all-users list is expensive to build, so only fetch it the first time

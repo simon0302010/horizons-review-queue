@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -542,6 +542,22 @@ struct AppState {
     rate_limiter: RwLock<HashMap<String, Vec<Instant>>>,
     dev_mode: bool,
     cached_users: RwLock<Option<(Instant, Vec<serde_json::Value>)>>,
+    // Slack IDs allowed to impersonate other users while logged in, even in prod.
+    admin_users: HashSet<String>,
+}
+
+impl AppState {
+    /// May this request view arbitrary users? True in DEV mode, or when the
+    /// logged-in session belongs to a configured admin.
+    async fn can_impersonate(&self, headers: &HeaderMap) -> bool {
+        if self.dev_mode {
+            return true;
+        }
+        match session_slack_id(self, headers).await {
+            Some(id) => self.admin_users.contains(&id),
+            None => false,
+        }
+    }
 }
 
 // ── Stats endpoint ──
@@ -922,13 +938,19 @@ async fn handle_auth_logout(
 
 // ── Dashboard HTML ──
 
-async fn handle_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(serde_json::json!({ "dev": state.dev_mode }))
+async fn handle_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "dev": state.dev_mode,
+        "impersonate": state.can_impersonate(&headers).await,
+    }))
 }
 
 #[derive(Deserialize)]
 struct MyProjectsQuery {
-    /// DEV-only: view another user's projects by Slack ID.
+    /// View another user's projects by Slack ID (DEV mode or an admin session).
     user: Option<String>,
 }
 
@@ -937,25 +959,21 @@ async fn handle_my_projects(
     headers: HeaderMap,
     Query(q): Query<MyProjectsQuery>,
 ) -> impl IntoResponse {
-    // In DEV mode, an explicit ?user=<slackId> overrides the session entirely so we
-    // can preview the dashboard as any user without logging in as them.
-    let override_slack_id = if state.dev_mode {
-        q.user
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-    } else {
-        None
-    };
+    let requested = q
+        .user
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
-    let slack_id = if let Some(id) = override_slack_id {
-        id
-    } else {
-        match resolve_session_slack_id(&state, &headers).await {
+    // An explicit ?user= is honoured only for callers allowed to impersonate
+    // (DEV mode, or a logged-in admin). Everyone else sees their own projects.
+    let slack_id = match requested {
+        Some(u) if state.can_impersonate(&headers).await => u,
+        _ => match resolve_session_slack_id(&state, &headers).await {
             Ok(id) => id,
             Err(resp) => return resp,
-        }
+        },
     };
 
     match state.client.find_user_projects(&slack_id).await {
@@ -966,6 +984,17 @@ async fn handle_my_projects(
         )
             .into_response(),
     }
+}
+
+/// The logged-in session's Slack ID, if there's a valid one (no error response).
+async fn session_slack_id(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let sid = get_session_id(headers)?;
+    let sessions = state.sessions.read().await;
+    let session = sessions.get(&sid)?;
+    if session.created_at.elapsed().as_secs() > SESSION_TTL_SECS {
+        return None;
+    }
+    session.slack_id.clone()
 }
 
 /// Resolve the logged-in session's Slack ID, or an error response to return.
@@ -1038,12 +1067,14 @@ fn projects_response(projects: Vec<serde_json::Value>) -> axum::response::Respon
     Json(out).into_response()
 }
 
-/// DEV-only: list every user who has a project in the pipeline, for the
-/// dashboard's user-override autocomplete. Returns `[{slack_id, display_name}]`.
+/// Lists every user who has a project in the pipeline, for the dashboard's
+/// user-override autocomplete. Returns `[{slack_id, display_name}]`. Available
+/// to DEV mode or a logged-in admin only.
 async fn handle_dev_users(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !state.dev_mode {
+    if !state.can_impersonate(&headers).await {
         return StatusCode::NOT_FOUND.into_response();
     }
     {
@@ -1136,6 +1167,19 @@ async fn main() -> anyhow::Result<()> {
         println!("DEV mode enabled — user-override box is active");
     }
 
+    // ADMIN_USERS is a comma-separated list of Slack IDs allowed to impersonate
+    // other users while logged in, even in production.
+    let admin_users: HashSet<String> = std::env::var("ADMIN_USERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if !admin_users.is_empty() {
+        println!("{} admin user(s) can view any user's projects", admin_users.len());
+    }
+
     let client = HorizonsClient::new()?;
     let state = Arc::new(AppState {
         client,
@@ -1147,6 +1191,7 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter: RwLock::new(HashMap::new()),
         dev_mode,
         cached_users: RwLock::new(None),
+        admin_users,
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -1169,7 +1214,9 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let mut app = Router::new()
+    // /api/dev/users and the ?user= override are access-controlled inside their
+    // handlers (DEV mode or an admin session), so they're always registered.
+    let app = Router::new()
         .route("/", get(handle_dashboard))
         .route("/style.css", get(handle_style))
         .route("/script.js", get(handle_script))
@@ -1180,14 +1227,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/logout", get(handle_auth_logout))
         .route("/api/my/projects", get(handle_my_projects))
         .route("/api/events", get(handle_events))
-        .route("/api/config", get(handle_config));
-
-    // The all-users list (for the DEV box autocomplete) is only exposed in DEV mode.
-    if dev_mode {
-        app = app.route("/api/dev/users", get(handle_dev_users));
-    }
-
-    let app = app.with_state(state);
+        .route("/api/config", get(handle_config))
+        .route("/api/dev/users", get(handle_dev_users))
+        .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());
     let addr = format!("0.0.0.0:{}", port);

@@ -28,7 +28,8 @@ A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Ax
 | `HCA_REDIRECT_URI` | Must match the redirect URI registered in your HCA app (e.g. `http://localhost:3001/api/auth/callback`) |
 | `HORIZONS_SESSION_ID` | Horizons API session cookie value -- paste the full `connect.sid` cookie from your browser after logging into the Horizons review dashboard |
 | `PORT` | Server port (default: 3001) |
-| `DEV` | Set to `1`/`true` to enable the dev user-override box (top right) for previewing any user's projects by Slack ID. Leave unset in production. |
+| `DEV` | Set to `1`/`true` to enable the dev user-override box (top right) for previewing any user's projects by Slack ID, with no login required. Leave unset in production. |
+| `ADMIN_USERS` | Comma-separated Slack IDs (e.g. `U0123,U0344`) allowed to use the user-override box while logged in — works in production. |
 
 ## Running
 
