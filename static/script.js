@@ -27,6 +27,9 @@ let currentUser = null;
 let devEnabled = false;   // DEV mode flag from /api/config
 let devUser = null;       // Slack ID being previewed in DEV mode
 let devUsers = [];        // [{slack_id, display_name}] for the DEV autocomplete
+let priorityReviewEnabled = false;
+let priorityRequested = new Set();
+let priorityProjects = [];
 
 async function checkAuth() {
   try {
@@ -34,12 +37,21 @@ async function checkAuth() {
     if (r.ok) {
       currentUser = await r.json();
       renderUser();
+      await loadConfig();
       loadMyProjects();
     } else {
       currentUser = null;
       renderUser();
     }
   } catch { currentUser = null; renderUser(); }
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    priorityReviewEnabled = !!d.priority_review_enabled;
+  } catch { priorityReviewEnabled = false; }
 }
 
 function renderUser() {
@@ -104,6 +116,16 @@ async function loadMyProjects() {
       content.innerHTML = '<div class="island-empty">No projects found</div>';
       return;
     }
+
+    // Track which projects have already requested priority review
+    priorityRequested = new Set();
+    priorityProjects = projects.filter(p => p.source === 'queue');
+    for (const p of projects) {
+      if (p.priorityReviewRequested) {
+        priorityRequested.add(p.projectId);
+      }
+    }
+    updatePriorityBtn();
 
       content.innerHTML = projects.map(p => {
         const isQueue = p.source === 'queue';
@@ -457,6 +479,110 @@ function resolveDevUser(raw) {
   const byName = devUsers.find(u => u.display_name === v);
   return byName ? byName.slack_id : v;
 }
+
+// ── Priority Review ──
+
+function updatePriorityBtn() {
+  const btn = document.getElementById('priority-review-btn');
+  if (!btn) return;
+  const hasPending = priorityProjects.some(p => !priorityRequested.has(p.projectId));
+  if (currentUser && priorityReviewEnabled && hasPending) {
+    btn.style.display = '';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+function populatePriorityDropdown() {
+  const select = document.getElementById('priority-project');
+  select.innerHTML = '';
+  const available = priorityProjects.filter(p => !priorityRequested.has(p.projectId));
+  if (!available.length) {
+    const opt = document.createElement('option');
+    opt.textContent = 'No projects available';
+    opt.disabled = true;
+    opt.selected = true;
+    select.appendChild(opt);
+    return;
+  }
+  for (const p of available) {
+    const opt = document.createElement('option');
+    opt.value = p.projectId;
+    opt.textContent = p.projectTitle || `Project #${p.projectId}`;
+    select.appendChild(opt);
+  }
+}
+
+function openPriorityModal() {
+  document.getElementById('priority-error').style.display = 'none';
+  document.getElementById('priority-success').style.display = 'none';
+  document.getElementById('priority-form').style.display = '';
+  document.getElementById('priority-reason').value = '';
+  document.getElementById('reason-count').textContent = '0';
+  populatePriorityDropdown();
+  document.getElementById('priority-modal').style.display = '';
+}
+
+function closePriorityModal() {
+  document.getElementById('priority-modal').style.display = 'none';
+}
+
+document.getElementById('priority-review-btn').addEventListener('click', openPriorityModal);
+
+document.getElementById('priority-cancel').addEventListener('click', closePriorityModal);
+
+document.getElementById('priority-close').addEventListener('click', closePriorityModal);
+
+document.getElementById('priority-reason').addEventListener('input', function () {
+  document.getElementById('reason-count').textContent = this.value.length;
+});
+
+document.getElementById('priority-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const select = document.getElementById('priority-project');
+  const projectId = parseInt(select.value, 10);
+  const reason = document.getElementById('priority-reason').value.trim();
+  const errorEl = document.getElementById('priority-error');
+  const submitBtn = document.getElementById('priority-submit');
+
+  if (!projectId || !reason) {
+    errorEl.textContent = 'Please select a project and provide a reason.';
+    errorEl.style.display = '';
+    return;
+  }
+
+  errorEl.style.display = 'none';
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Submitting...';
+
+  try {
+    const r = await fetch('/api/priority-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, reason }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      throw new Error(data.error || 'Request failed');
+    }
+    priorityRequested.add(projectId);
+    document.getElementById('priority-form').style.display = 'none';
+    document.getElementById('priority-success').style.display = '';
+    updatePriorityBtn();
+    loadMyProjects();
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = '';
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Submit Request';
+  }
+});
+
+// Click modal overlay to close
+document.getElementById('priority-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closePriorityModal();
+});
 
 loadStats();
 setInterval(loadStats, 30000);

@@ -1,0 +1,22 @@
+_metadata:
+  major_version: 1
+display_information:
+  name: Horizons Priority Review
+  description: Handles priority review requests from the Horizons dashboard
+  background_color: "#ec3750"
+features:
+  bot_user:
+    display_name: Horizons Priority Review
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.public
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR-DOMAIN/api/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

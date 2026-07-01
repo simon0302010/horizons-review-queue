@@ -4,12 +4,14 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use axum::{
+    body::Bytes,
     extract::{Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
-    routing::get,
+    routing::{get, post},
     Router,
 };
+use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -545,6 +547,11 @@ struct AppState {
     cached_users: RwLock<Option<(Instant, Vec<serde_json::Value>)>>,
     // Slack IDs allowed to impersonate other users while logged in, even in prod.
     admin_users: HashSet<String>,
+    // Priority review Slack integration
+    slack_bot_token: Option<String>,
+    slack_signing_secret: Option<String>,
+    priority_review_channel_id: Option<String>,
+    priority_review_requested: RwLock<HashSet<(String, u64)>>,
 }
 
 impl AppState {
@@ -946,6 +953,7 @@ async fn handle_config(
     Json(serde_json::json!({
         "dev": state.dev_mode,
         "impersonate": state.can_impersonate(&headers).await,
+        "priority_review_enabled": state.slack_bot_token.is_some() && state.priority_review_channel_id.is_some(),
     }))
 }
 
@@ -978,7 +986,20 @@ async fn handle_my_projects(
     };
 
     match state.client.find_user_projects(&slack_id).await {
-        Ok(projects) => projects_response(projects),
+        Ok(mut projects) => {
+            // Enrich with priority review status
+            {
+                let requested = state.priority_review_requested.read().await;
+                for p in &mut projects {
+                    if let Some(pid) = p["projectId"].as_u64() {
+                        if let Some(obj) = p.as_object_mut() {
+                            obj.insert("priorityReviewRequested".into(), serde_json::json!(requested.contains(&(slack_id.clone(), pid))));
+                        }
+                    }
+                }
+            }
+            projects_response(projects)
+        }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -1132,6 +1153,256 @@ async fn handle_script() -> impl IntoResponse {
     )
 }
 
+// ── Priority Review ──
+
+#[derive(Deserialize)]
+struct PriorityReviewRequest {
+    project_id: u64,
+    reason: String,
+}
+
+async fn handle_priority_review(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<PriorityReviewRequest>,
+) -> impl IntoResponse {
+    // Slack integration must be configured
+    let (bot_token, channel_id) = match (&state.slack_bot_token, &state.priority_review_channel_id) {
+        (Some(t), Some(c)) => (t.clone(), c.clone()),
+        _ => return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "priority review not configured"}))).into_response(),
+    };
+
+    let slack_id = match resolve_session_slack_id(&state, &headers).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let display_name = {
+        let sessions = state.sessions.read().await;
+        let sid = match get_session_id(&headers) {
+            Some(s) => s,
+            None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"}))).into_response(),
+        };
+        sessions
+            .get(&sid)
+            .and_then(|s| s.display_name.clone())
+            .unwrap_or_else(|| slack_id.clone())
+    };
+
+    let project_id = body.project_id;
+    let reason = body.reason.trim().to_string();
+    if reason.is_empty() || reason.len() > 2000 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "reason must be between 1 and 2000 characters"}))).into_response();
+    }
+
+    // Check if already requested
+    {
+        let requested = state.priority_review_requested.read().await;
+        if requested.contains(&(slack_id.clone(), project_id)) {
+            return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Priority review already requested for this project"}))).into_response();
+        }
+    }
+
+    // Verify project belongs to user and is in queue
+    let project_title = match state.client.find_user_projects(&slack_id).await {
+        Ok(projects) => {
+            match projects.iter().find(|p| {
+                p["projectId"].as_u64() == Some(project_id)
+                    && p["source"].as_str() == Some("queue")
+            }) {
+                Some(p) => p["projectTitle"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("Project #{}", project_id)),
+                None => {
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project not found or not in queue"}))).into_response();
+                }
+            }
+        }
+        Err(_) => {
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Failed to verify project"}))).into_response();
+        }
+    };
+
+    // Build Slack message
+    let message = serde_json::json!({
+        "channel": channel_id,
+        "text": format!("Priority review requested by {} for project #{}: {}", display_name, project_id, reason),
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "🚀 Priority Review Requested"
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Project:*\n<https://horizons.hackclub.com/projects/{}|{}>", project_id, project_title)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Project ID:*\n{}", project_id)
+                    }
+                ]
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format!("*Reason:*\n{}", reason)
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("Requested by: {} (<@{}>)", display_name, slack_id)
+                    }
+                ]
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Approve"
+                        },
+                        "style": "primary",
+                        "value": format!("{}", project_id),
+                        "action_id": "approve_priority_review"
+                    },
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Reject"
+                        },
+                        "style": "danger",
+                        "value": format!("{}", project_id),
+                        "action_id": "reject_priority_review"
+                    }
+                ]
+            }
+        ]
+    });
+
+    let slack_resp = state
+        .client
+        .client
+        .post("https://slack.com/api/chat.postMessage")
+        .header("Authorization", format!("Bearer {}", bot_token))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .json(&message)
+        .send()
+        .await;
+
+    match slack_resp {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            if !status.is_success() || body["ok"] != serde_json::Value::Bool(true) {
+                let err = body["error"].as_str().unwrap_or("unknown_slack_error");
+                eprintln!("Slack chat.postMessage error: {} (status {})", err, status);
+                return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("Slack error: {}", err)}))).into_response();
+            }
+
+            let mut requested = state.priority_review_requested.write().await;
+            requested.insert((slack_id, project_id));
+
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Err(e) => {
+            eprintln!("Slack request failed: {}", e);
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("Slack request failed: {}", e)})))
+                .into_response()
+        }
+    }
+}
+
+// ── Slack interaction handling ──
+
+fn verify_slack_signature(secret: &str, timestamp: &str, body: &[u8], signature_header: &str) -> bool {
+    let Some(sig) = signature_header.strip_prefix("v0=") else { return false };
+    let basis = format!("v0:{}:", timestamp);
+    let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(basis.as_bytes());
+    mac.update(body);
+    let computed = hex::encode(mac.finalize().into_bytes());
+    computed == sig
+}
+
+async fn handle_slack_interaction(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    // Verify signature if signing secret is configured
+    if let Some(secret) = &state.slack_signing_secret {
+        let ts = headers
+            .get("x-slack-request-timestamp")
+            .and_then(|v| v.to_str().ok());
+        let sig = headers
+            .get("x-slack-signature")
+            .and_then(|v| v.to_str().ok());
+        match (ts, sig) {
+            (Some(ts), Some(sig)) => {
+                if !verify_slack_signature(secret, ts, &body, sig) {
+                    eprintln!("Slack interaction: signature verification failed");
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+            }
+            _ => {
+                eprintln!("Slack interaction: missing signature headers");
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+    }
+
+    // Parse form body to extract the payload field
+    let body_str = String::from_utf8_lossy(&body);
+    let payload_str: String = serde_urlencoded::from_str(&body_str)
+        .ok()
+        .and_then(|map: HashMap<String, String>| map.get("payload").cloned())
+        .unwrap_or_default();
+
+    let payload: serde_json::Value = match serde_json::from_str(&payload_str) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("Slack interaction: invalid payload JSON");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    let action = &payload["actions"][0];
+    let action_id = action["action_id"].as_str().unwrap_or("");
+    let project_id = action["value"].as_str().unwrap_or("unknown");
+    let user_name = payload["user"]["name"].as_str().unwrap_or("unknown");
+
+    match action_id {
+        "approve_priority_review" => {
+            println!("project {} priority review approved by {}", project_id, user_name);
+        }
+        "reject_priority_review" => {
+            println!("project {} priority review rejected by {}", project_id, user_name);
+        }
+        _ => {
+            println!("unknown slack action '{}' for project {}", action_id, project_id);
+        }
+    }
+
+    StatusCode::OK.into_response()
+}
+
 // ── URL encoding helper ──
 
 fn urlencoding(input: &str) -> String {
@@ -1181,6 +1452,18 @@ async fn main() -> anyhow::Result<()> {
         println!("{} admin user(s) can view any user's projects", admin_users.len());
     }
 
+    let slack_bot_token = std::env::var("SLACK_BOT_TOKEN").ok();
+    let slack_signing_secret = std::env::var("SLACK_SIGNING_SECRET").ok();
+    let priority_review_channel_id = std::env::var("PRIORITY_REVIEW_CHANNEL_ID").ok();
+    if slack_bot_token.is_some() && priority_review_channel_id.is_some() {
+        println!("Priority review Slack integration enabled");
+        if slack_signing_secret.is_none() {
+            println!("  WARNING: SLACK_SIGNING_SECRET not set — interaction signatures not verified");
+        }
+    } else {
+        println!("Priority review Slack integration disabled (set SLACK_BOT_TOKEN and PRIORITY_REVIEW_CHANNEL_ID)");
+    }
+
     let client = HorizonsClient::new()?;
     let state = Arc::new(AppState {
         client,
@@ -1193,6 +1476,10 @@ async fn main() -> anyhow::Result<()> {
         dev_mode,
         cached_users: RwLock::new(None),
         admin_users,
+        slack_bot_token,
+        slack_signing_secret,
+        priority_review_channel_id,
+        priority_review_requested: RwLock::new(HashSet::new()),
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -1230,6 +1517,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/events", get(handle_events))
         .route("/api/config", get(handle_config))
         .route("/api/dev/users", get(handle_dev_users))
+        .route("/api/priority-review", post(handle_priority_review))
+        .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".into());
