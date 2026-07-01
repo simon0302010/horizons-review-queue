@@ -514,7 +514,7 @@ function updatePriorityBtn() {
   const btn = document.getElementById('priority-review-btn');
   if (!btn) return;
   const hasPending = priorityProjects.some(p => !priorityRequested.has(p.projectId));
-  btn.disabled = !(currentUser && priorityReviewEnabled && hasPending);
+  btn.disabled = !(currentUser && hasPending);
 }
 
 function populatePriorityDropdown() {
