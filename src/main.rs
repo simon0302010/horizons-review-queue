@@ -34,7 +34,7 @@ struct UserSession {
 
 // ── Priority Review data ──
 
-#[derive(Clone, Copy, Serialize, PartialEq)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum PriorityReviewStatus {
     Pending,
@@ -47,7 +47,7 @@ enum PriorityReviewStatus {
 /// reviewer's approve/reject decision. It is only dropped once the project clears
 /// regular review, so a project can never have priority review requested twice
 /// while a record exists (see [`handle_priority_review_approved`]).
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PriorityReviewEntry {
     project_id: u64,
     project_title: String,
@@ -581,6 +581,7 @@ struct AppState {
     slack_signing_secret: Option<String>,
     priority_review_channel_id: Option<String>,
     priority_review_api_key: Option<String>,
+    priority_review_storage_path: String,
     // One record per project, keyed by project ID. Kept until the project clears
     // regular review, so it also serves as the "already requested" lock.
     priority_review: RwLock<HashMap<u64, PriorityReviewEntry>>,
@@ -1385,6 +1386,8 @@ async fn handle_priority_review(
                 decided_by: None,
                 decided_at: None,
             });
+            drop(records);
+            save_priority_reviews(&state).await;
 
             Json(serde_json::json!({"ok": true})).into_response()
         }
@@ -1481,6 +1484,10 @@ async fn handle_slack_interaction(
                     .unwrap_or_default()
                     .as_secs(),
             );
+            drop(records);
+            save_priority_reviews(&state).await;
+        } else {
+            drop(records);
         }
     }
 
@@ -1575,6 +1582,8 @@ async fn handle_priority_review_approved(
             if !normally_approved.is_empty() {
                 let mut records = state.priority_review.write().await;
                 records.retain(|pid, _| !normally_approved.contains(pid));
+                drop(records);
+                save_priority_reviews(&state).await;
             }
         }
     }
@@ -1582,6 +1591,18 @@ async fn handle_priority_review_approved(
     let records = state.priority_review.read().await;
     let list: Vec<&PriorityReviewEntry> = records.values().collect();
     (StatusCode::OK, Json(serde_json::json!({ "approved": list }))).into_response()
+}
+
+// ── Persistence ──
+
+async fn save_priority_reviews(state: &AppState) {
+    let records = state.priority_review.read().await;
+    if let Ok(json) = serde_json::to_string_pretty(&*records) {
+        drop(records);
+        if let Err(e) = tokio::fs::write(&state.priority_review_storage_path, json).await {
+            eprintln!("Failed to save priority reviews: {}", e);
+        }
+    }
 }
 
 // ── URL encoding helper ──
@@ -1647,6 +1668,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let client = HorizonsClient::new()?;
+
+    let priority_review_storage_path = std::env::var("PRIORITY_REVIEW_STORAGE_PATH")
+        .unwrap_or_else(|_| "data/priority_review.json".to_string());
+    // Ensure parent directory exists
+    if let Some(parent) = std::path::Path::new(&priority_review_storage_path).parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let priority_review_data = tokio::fs::read_to_string(&priority_review_storage_path)
+        .await
+        .ok()
+        .and_then(|s| serde_json::from_str::<HashMap<u64, PriorityReviewEntry>>(&s).ok())
+        .unwrap_or_default();
+
     let state = Arc::new(AppState {
         client,
         hca_client_id,
@@ -1662,7 +1696,8 @@ async fn main() -> anyhow::Result<()> {
         slack_signing_secret,
         priority_review_channel_id,
         priority_review_api_key,
-        priority_review: RwLock::new(HashMap::new()),
+        priority_review_storage_path,
+        priority_review: RwLock::new(priority_review_data),
     });
 
     // Periodic cleanup of expired pending states and sessions

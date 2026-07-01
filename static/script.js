@@ -69,6 +69,7 @@ function renderUser() {
     btn.style.display = '';
     area.innerHTML = '';
   }
+  updatePriorityBtn();
 }
 
 async function logout() {
