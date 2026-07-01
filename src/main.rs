@@ -50,6 +50,7 @@ struct PriorityReviewApproval {
     reason: String,
     approved_by: String,
     approved_at: u64,
+    slack_id: String,
 }
 
 // ── Horizons client ──
@@ -1438,11 +1439,12 @@ async fn handle_slack_interaction(
                         project_id: req.project_id,
                         project_title: req.project_title,
                         reason: req.reason,
-                        approved_by: format!("{} (slack)", user_name),
+                        approved_by: user_name.to_string(),
                         approved_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
+                        slack_id: req.slack_id,
                     });
                 }
             }
@@ -1521,6 +1523,28 @@ async fn handle_priority_review_approved(
 
     if !ok {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid or missing API key — send Authorization: Bearer <key> or ?key=<key>"}))).into_response();
+    }
+
+    // Clean up projects that have been regular-review approved (left the queue)
+    {
+        let mut approved = state.priority_review_approved.write().await;
+        let active_ids: std::collections::HashSet<u64> = {
+            let mut ids = std::collections::HashSet::new();
+            let mut seen_slack_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for a in approved.iter() {
+                if seen_slack_ids.insert(a.slack_id.clone()) {
+                    if let Ok(projects) = state.client.find_user_projects(&a.slack_id).await {
+                        for p in &projects {
+                            if let Some(pid) = p["projectId"].as_u64() {
+                                ids.insert(pid);
+                            }
+                        }
+                    }
+                }
+            }
+            ids
+        };
+        approved.retain(|a| active_ids.contains(&a.project_id));
     }
 
     let approved = state.priority_review_approved.read().await;
