@@ -100,8 +100,8 @@ async function loadMyProjects() {
   }
 
   island.classList.add('open');
-  const titleEl = document.getElementById('island-title');
-  if (titleEl) titleEl.textContent = devUser ? `Projects · ${devUser}` : 'My Submitted Projects';
+  const titleText = document.getElementById('island-title-text');
+  if (titleText) titleText.textContent = devUser ? `Projects · ${devUser}` : 'My Submitted Projects';
   const who = devUser ? ` for ${escHtml(devUser)}` : '';
   content.innerHTML = `<div class="island-loading">Loading projects${who}...</div>`;
 
