@@ -32,6 +32,26 @@ struct UserSession {
     created_at: Instant,
 }
 
+// ── Priority Review data ──
+
+#[derive(Clone, Serialize)]
+struct PriorityReviewRequest {
+    project_id: u64,
+    project_title: String,
+    reason: String,
+    slack_id: String,
+    display_name: String,
+}
+
+#[derive(Clone, Serialize)]
+struct PriorityReviewApproval {
+    project_id: u64,
+    project_title: String,
+    reason: String,
+    approved_by: String,
+    approved_at: u64,
+}
+
 // ── Horizons client ──
 
 struct HorizonsClient {
@@ -551,7 +571,9 @@ struct AppState {
     slack_bot_token: Option<String>,
     slack_signing_secret: Option<String>,
     priority_review_channel_id: Option<String>,
-    priority_review_requested: RwLock<HashSet<(String, u64)>>,
+    priority_review_api_key: Option<String>,
+    priority_review_requests: RwLock<HashMap<u64, PriorityReviewRequest>>,
+    priority_review_approved: RwLock<Vec<PriorityReviewApproval>>,
 }
 
 impl AppState {
@@ -989,14 +1011,21 @@ async fn handle_my_projects(
         Ok(mut projects) => {
             // Enrich with priority review status
             {
-                let requested = state.priority_review_requested.read().await;
+                let requested = state.priority_review_requests.read().await;
                 for p in &mut projects {
                     if let Some(pid) = p["projectId"].as_u64() {
                         if let Some(obj) = p.as_object_mut() {
-                            obj.insert("priorityReviewRequested".into(), serde_json::json!(requested.contains(&(slack_id.clone(), pid))));
+                            obj.insert("priorityReviewRequested".into(), serde_json::json!(requested.contains_key(&pid)));
                         }
                     }
                 }
+            }
+            // Clean up approved priority reviews for projects that left the queue
+            {
+                let active_ids: HashSet<u64> = projects.iter()
+                    .filter_map(|p| p["projectId"].as_u64()).collect();
+                let mut approved = state.priority_review_approved.write().await;
+                approved.retain(|a| active_ids.contains(&a.project_id));
             }
             projects_response(projects)
         }
@@ -1156,7 +1185,7 @@ async fn handle_script() -> impl IntoResponse {
 // ── Priority Review ──
 
 #[derive(Deserialize)]
-struct PriorityReviewRequest {
+struct PriorityReviewInput {
     project_id: u64,
     reason: String,
 }
@@ -1164,7 +1193,7 @@ struct PriorityReviewRequest {
 async fn handle_priority_review(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<PriorityReviewRequest>,
+    Json(body): Json<PriorityReviewInput>,
 ) -> impl IntoResponse {
     // Slack integration must be configured
     let (bot_token, channel_id) = match (&state.slack_bot_token, &state.priority_review_channel_id) {
@@ -1197,8 +1226,8 @@ async fn handle_priority_review(
 
     // Check if already requested
     {
-        let requested = state.priority_review_requested.read().await;
-        if requested.contains(&(slack_id.clone(), project_id)) {
+        let requested = state.priority_review_requests.read().await;
+        if requested.contains_key(&project_id) {
             return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Priority review already requested for this project"}))).into_response();
         }
     }
@@ -1313,8 +1342,14 @@ async fn handle_priority_review(
                 return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("Slack error: {}", err)}))).into_response();
             }
 
-            let mut requested = state.priority_review_requested.write().await;
-            requested.insert((slack_id, project_id));
+            let mut requested = state.priority_review_requests.write().await;
+            requested.insert(project_id, PriorityReviewRequest {
+                project_id,
+                project_title: project_title.clone(),
+                reason: reason.clone(),
+                slack_id: slack_id.clone(),
+                display_name: display_name.clone(),
+            });
 
             Json(serde_json::json!({"ok": true})).into_response()
         }
@@ -1390,9 +1425,36 @@ async fn handle_slack_interaction(
     let channel_id = payload["channel"]["id"].as_str().unwrap_or("");
     let message_ts = payload["container"]["message_ts"].as_str().unwrap_or("");
 
+    let pid: u64 = project_id.parse().unwrap_or(0);
+
     let (action_past, _) = match action_id {
-        "approve_priority_review" => ("approved", "Approved"),
-        "reject_priority_review" => ("rejected", "Rejected"),
+        "approve_priority_review" => {
+            // Move from requests to approved
+            if pid != 0 {
+                let mut requests = state.priority_review_requests.write().await;
+                if let Some(req) = requests.remove(&pid) {
+                    let mut approved = state.priority_review_approved.write().await;
+                    approved.push(PriorityReviewApproval {
+                        project_id: req.project_id,
+                        project_title: req.project_title,
+                        reason: req.reason,
+                        approved_by: format!("{} (slack)", user_name),
+                        approved_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    });
+                }
+            }
+            ("approved", "Approved")
+        }
+        "reject_priority_review" => {
+            if pid != 0 {
+                let mut requests = state.priority_review_requests.write().await;
+                requests.remove(&pid);
+            }
+            ("rejected", "Rejected")
+        }
         _ => ("unknown", "Unknown"),
     };
 
@@ -1434,6 +1496,35 @@ async fn handle_slack_interaction(
     }
 
     StatusCode::OK.into_response()
+}
+
+// ── Priority review approved listing ──
+
+async fn handle_priority_review_approved(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let api_key = match &state.priority_review_api_key {
+        Some(k) => k.clone(),
+        None => return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "PRIORITY_REVIEW_API_KEY not set"}))).into_response(),
+    };
+
+    let header_key = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("ApiKey ")))
+        .map(|v| v.trim());
+    let query_key = q.get("key").map(|s| s.as_str()).unwrap_or("");
+
+    let ok = header_key == Some(api_key.as_str()) || query_key == api_key;
+
+    if !ok {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid or missing API key — send Authorization: Bearer <key> or ?key=<key>"}))).into_response();
+    }
+
+    let approved = state.priority_review_approved.read().await;
+    (StatusCode::OK, Json(serde_json::json!({ "approved": approved.clone() }))).into_response()
 }
 
 // ── URL encoding helper ──
@@ -1488,6 +1579,7 @@ async fn main() -> anyhow::Result<()> {
     let slack_bot_token = std::env::var("SLACK_BOT_TOKEN").ok();
     let slack_signing_secret = std::env::var("SLACK_SIGNING_SECRET").ok();
     let priority_review_channel_id = std::env::var("PRIORITY_REVIEW_CHANNEL_ID").ok();
+    let priority_review_api_key = std::env::var("PRIORITY_REVIEW_API_KEY").ok();
     if slack_bot_token.is_some() && priority_review_channel_id.is_some() {
         println!("Priority review Slack integration enabled");
         if slack_signing_secret.is_none() {
@@ -1512,7 +1604,9 @@ async fn main() -> anyhow::Result<()> {
         slack_bot_token,
         slack_signing_secret,
         priority_review_channel_id,
-        priority_review_requested: RwLock::new(HashSet::new()),
+        priority_review_api_key,
+        priority_review_requests: RwLock::new(HashMap::new()),
+        priority_review_approved: RwLock::new(Vec::new()),
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -1551,6 +1645,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/config", get(handle_config))
         .route("/api/dev/users", get(handle_dev_users))
         .route("/api/priority-review", post(handle_priority_review))
+        .route("/api/priority-review/approved", get(handle_priority_review_approved))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 

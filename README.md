@@ -34,6 +34,7 @@ A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Ax
 | `SLACK_BOT_TOKEN` | Slack Bot User OAuth Token with `chat:write` and `chat:write.public` scopes. Required for priority review requests. |
 | `SLACK_SIGNING_SECRET` | Slack Signing Secret from your app's Basic Info page. Validates interactive button clicks. Recommended if using Approve/Reject buttons. |
 | `PRIORITY_REVIEW_CHANNEL_ID` | Slack channel ID (e.g. `C0123456789`) where priority review requests are posted. Required for priority review requests. |
+| `PRIORITY_REVIEW_API_KEY` | API key for `GET /api/priority-review/approved`. Send as `Authorization: Bearer <key>` or `?key=<key>`. |
 
 ## Running
 
