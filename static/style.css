@@ -1,4 +1,30 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ── Global loading bar (visible while background fetches are in flight) ── */
+#loadbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  z-index: 9999;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+#loadbar.active { opacity: 1; }
+#loadbar-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 35%;
+  background: #ec3750;
+  border-radius: 0 2px 2px 0;
+  animation: loadbar-slide 1.1s ease-in-out infinite;
+}
+@keyframes loadbar-slide {
+  0%   { left: -35%; }
+  100% { left: 100%; }
+}
 body {
   font-family: 'Bricolage Grotesque', 'DM Sans', system-ui, -apple-system, sans-serif;
   background: #f3e8d8;

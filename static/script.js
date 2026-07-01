@@ -1,3 +1,27 @@
+// ── Global loading bar ──
+// Wrap fetch so any in-flight request drives the top progress bar. A short
+// delay keeps quick requests (config, stats) from flashing it; only slower
+// ones (dev users, event stats, per-project timelines) actually show.
+(function () {
+  const nativeFetch = window.fetch.bind(window);
+  let inflight = 0;
+  let showTimer = null;
+  const bar = () => document.getElementById('loadbar');
+  function show() { const b = bar(); if (b) b.classList.add('active'); }
+  function hide() { const b = bar(); if (b) b.classList.remove('active'); }
+  window.fetch = function (...args) {
+    inflight++;
+    if (!showTimer) showTimer = setTimeout(() => { showTimer = null; show(); }, 150);
+    return nativeFetch(...args).finally(() => {
+      inflight = Math.max(0, inflight - 1);
+      if (inflight === 0) {
+        if (showTimer) { clearTimeout(showTimer); showTimer = null; }
+        hide();
+      }
+    });
+  };
+})();
+
 // ── Auth state ──
 let currentUser = null;
 let devEnabled = false;   // DEV mode flag from /api/config
@@ -375,10 +399,15 @@ async function initDevBox() {
   const input = document.getElementById('dev-user');
   box.style.display = '';
 
-  // Populate the autocomplete with every user in the pipeline. Each option's
-  // value is "Display Name · <slackId>" so typing a name filters the list;
-  // apply() pulls the trailing Slack ID back out (raw IDs still work too).
-  loadDevUsers();
+  // The all-users list is expensive to build, so only fetch it the first time
+  // the box is focused (autocomplete: "Display Name · <slackId>"). apply() pulls
+  // the trailing Slack ID back out, and raw IDs work without the list at all.
+  let usersLoaded = false;
+  input.addEventListener('focus', () => {
+    if (usersLoaded) return;
+    usersLoaded = true;
+    loadDevUsers();
+  });
 
   const apply = () => {
     devUser = resolveDevUser(input.value);

@@ -13,7 +13,7 @@ use axum::{
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 const API_BASE: &str = "https://horizons.hackclub.com";
 const HCA_AUTH_URL: &str = "https://auth.hackclub.com";
@@ -389,83 +389,71 @@ impl HorizonsClient {
 
     /// Gather all unique users from queue, past_reviews, and fraud_rejected
     async fn get_all_users(&self) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+        use std::collections::HashSet;
+
+        // Cap concurrent flaron lookups so we don't fire hundreds of requests at once.
+        const MAX_CONCURRENT: usize = 16;
+
         let (q, pr, fr) = tokio::join!(
             self.get_queue(),
             self.get_past_reviews(),
             self.get_fraud_rejected(),
         );
 
-        let mut seen: Vec<String> = Vec::new();
+        let empty: Vec<serde_json::Value> = vec![];
+        let mut seen: HashSet<String> = HashSet::new();
 
         if let Ok(queue) = &q {
-            let empty = vec![];
             for item in queue.as_array().unwrap_or(&empty) {
                 if let Some(sid) = item["project"]["user"]["slackUserId"].as_str() {
-                    if !seen.contains(&sid.to_string()) {
-                        seen.push(sid.to_string());
-                    }
+                    seen.insert(sid.to_string());
                 }
             }
         }
         if let Ok(past) = &pr {
-            let empty = vec![];
             for item in past["reviews"].as_array().unwrap_or(&empty) {
                 if let Some(sid) = item["user"]["slackUserId"].as_str() {
-                    if !seen.contains(&sid.to_string()) {
-                        seen.push(sid.to_string());
-                    }
+                    seen.insert(sid.to_string());
                 }
             }
         }
         if let Ok(fraud) = &fr {
-            let empty = vec![];
             for item in fraud.as_array().unwrap_or(&empty) {
                 if let Some(sid) = item["user"]["slackUserId"].as_str() {
-                    if !seen.contains(&sid.to_string()) {
-                        seen.push(sid.to_string());
-                    }
+                    seen.insert(sid.to_string());
                 }
             }
         }
 
-        let mut users = Vec::with_capacity(seen.len());
-        {
-            let mut handles = Vec::with_capacity(seen.len());
-            for sid in &seen {
-                let sid = sid.clone();
-                handles.push(tokio::spawn(async move {
-                    let client = match reqwest::Client::builder()
-                        .redirect(reqwest::redirect::Policy::none())
-                        .build()
-                    {
-                        Ok(c) => c,
-                        Err(_) => return (sid, None),
-                    };
+        // Look up display names concurrently but bounded, reusing the shared client.
+        let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+        let mut handles = Vec::with_capacity(seen.len());
+        for sid in seen {
+            let client = self.client.clone();
+            let sem = sem.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await;
+                let display_name = async {
                     let url = format!("https://flaron.halceon.dev/user/{}", sid);
-                    let resp = match client.get(&url).send().await {
-                        Ok(r) => r,
-                        Err(_) => return (sid, None),
-                    };
+                    let resp = client.get(&url).send().await.ok()?;
                     if !resp.status().is_success() {
-                        return (sid, None);
+                        return None;
                     }
-                    let data: serde_json::Value = match resp.json().await {
-                        Ok(v) => v,
-                        Err(_) => return (sid, None),
-                    };
-                    let dn = match data["data"]["user"]["display_name"].as_str() {
-                        Some(s) => s.to_string(),
-                        None => return (sid, None),
-                    };
-                    (sid, Some(dn))
-                }));
-            }
-            for handle in handles {
-                match handle.await {
-                    Ok((sid, Some(dn))) => users.push(serde_json::json!({"slack_id": sid, "display_name": dn})),
-                    Ok((sid, None)) => users.push(serde_json::json!({"slack_id": sid, "display_name": sid})),
-                    Err(_) => {},
+                    let data: serde_json::Value = resp.json().await.ok()?;
+                    let name = data["data"]["user"]["display_name"].as_str()?.trim();
+                    if name.is_empty() { None } else { Some(name.to_string()) }
                 }
+                .await;
+                (sid, display_name)
+            }));
+        }
+
+        let mut users = Vec::with_capacity(handles.len());
+        for handle in handles {
+            if let Ok((sid, name)) = handle.await {
+                // Fall back to the Slack ID when flaron has no (or a blank) name.
+                let display_name = name.unwrap_or_else(|| sid.clone());
+                users.push(serde_json::json!({"slack_id": sid, "display_name": display_name}));
             }
         }
 
