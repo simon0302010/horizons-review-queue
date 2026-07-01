@@ -117,9 +117,12 @@ async function loadMyProjects() {
       return;
     }
 
-    // Track which projects have already requested priority review
+    // Only queue projects that have passed fraud and are in regular ("Normal")
+    // review are eligible for priority review. Projects with an existing request
+    // (pending/approved/rejected) come back flagged and stay locked until they
+    // clear regular review.
     priorityRequested = new Set();
-    priorityProjects = projects.filter(p => p.source === 'queue');
+    priorityProjects = projects.filter(p => p.source === 'queue' && p.reviewStage === 'Normal Review');
     for (const p of projects) {
       if (p.priorityReviewRequested) {
         priorityRequested.add(p.projectId);

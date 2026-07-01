@@ -6,7 +6,7 @@ A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Ax
 
 ## Features
 
-- **Priority review requests** -- logged-in users can request priority review for any of their pending projects via a modal; the request (project, reason, requester) is posted to a configured Slack channel. Only one request per project. Requires `SLACK_BOT_TOKEN` and `PRIORITY_REVIEW_CHANNEL_ID` env vars.
+- **Priority review requests** -- logged-in users can request priority review for their projects that are in regular ("Normal") review via a modal; the request (project, reason, requester) is posted to a configured Slack channel. Only one request per project: once requested, the project stays locked (whether the reviewer approves or rejects) until it clears regular review. Requires `SLACK_BOT_TOKEN` and `PRIORITY_REVIEW_CHANNEL_ID` env vars.
 - **Pipeline overview** -- pending review counts for fraud and normal review, displayed as a stacked bar chart
 - **Your projects** -- gathers all of a user's projects from the review queue, past reviews, and fraud-rejected submissions into one sorted list, deduplicated by project so each appears once at its latest status
 - **Reviewer feedback & timeline** -- shows the latest reviewer feedback per project plus an expandable history of every submission, review, and resubmission

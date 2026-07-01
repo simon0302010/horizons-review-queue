@@ -34,23 +34,31 @@ struct UserSession {
 
 // ── Priority Review data ──
 
-#[derive(Clone, Serialize)]
-struct PriorityReviewRequest {
-    project_id: u64,
-    project_title: String,
-    reason: String,
-    slack_id: String,
-    display_name: String,
+#[derive(Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum PriorityReviewStatus {
+    Pending,
+    Approved,
+    Rejected,
 }
 
+/// A single priority-review record, keyed by project ID. One record per project:
+/// it is created when a user requests priority review and persists through the
+/// reviewer's approve/reject decision. It is only dropped once the project clears
+/// regular review, so a project can never have priority review requested twice
+/// while a record exists (see [`handle_priority_review_approved`]).
 #[derive(Clone, Serialize)]
-struct PriorityReviewApproval {
+struct PriorityReviewEntry {
     project_id: u64,
     project_title: String,
     reason: String,
-    approved_by: String,
-    approved_at: u64,
     slack_id: String,
+    status: PriorityReviewStatus,
+    // Who acted on the request in Slack, and when — set on approve/reject only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decided_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decided_at: Option<u64>,
 }
 
 // ── Horizons client ──
@@ -573,8 +581,9 @@ struct AppState {
     slack_signing_secret: Option<String>,
     priority_review_channel_id: Option<String>,
     priority_review_api_key: Option<String>,
-    priority_review_requests: RwLock<HashMap<u64, PriorityReviewRequest>>,
-    priority_review_approved: RwLock<Vec<PriorityReviewApproval>>,
+    // One record per project, keyed by project ID. Kept until the project clears
+    // regular review, so it also serves as the "already requested" lock.
+    priority_review: RwLock<HashMap<u64, PriorityReviewEntry>>,
 }
 
 impl AppState {
@@ -1010,13 +1019,16 @@ async fn handle_my_projects(
 
     match state.client.find_user_projects(&slack_id).await {
         Ok(mut projects) => {
-            // Enrich with priority review status
+            // Enrich with priority review status. A project counts as "requested"
+            // (and stays locked) as long as it has a record — through pending,
+            // approved, or rejected — until it clears regular review and the
+            // record is dropped by the approved endpoint.
             {
-                let requested = state.priority_review_requests.read().await;
+                let records = state.priority_review.read().await;
                 for p in &mut projects {
                     if let Some(pid) = p["projectId"].as_u64() {
                         if let Some(obj) = p.as_object_mut() {
-                            obj.insert("priorityReviewRequested".into(), serde_json::json!(requested.contains_key(&pid)));
+                            obj.insert("priorityReviewRequested".into(), serde_json::json!(records.contains_key(&pid)));
                         }
                     }
                 }
@@ -1218,25 +1230,31 @@ async fn handle_priority_review(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "reason must be between 1 and 2000 characters"}))).into_response();
     }
 
-    // Check if already requested
+    // One request per project: reject if a record already exists (pending,
+    // approved, or rejected). It is only cleared once the project clears
+    // regular review, so this also blocks re-requesting after a rejection.
     {
-        let requested = state.priority_review_requests.read().await;
-        if requested.contains_key(&project_id) {
+        let records = state.priority_review.read().await;
+        if records.contains_key(&project_id) {
             return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Priority review already requested for this project"}))).into_response();
         }
     }
 
-    // Verify project belongs to user and is in queue
+    // Verify the project belongs to the user and is eligible: it must be a queue
+    // project that has passed fraud and is in regular ("Normal") review.
     let project_title = match state.client.find_user_projects(&slack_id).await {
         Ok(projects) => {
             match projects.iter().find(|p| {
                 p["projectId"].as_u64() == Some(project_id)
                     && p["source"].as_str() == Some("queue")
             }) {
-                Some(p) => p["projectTitle"]
+                Some(p) if p["reviewStage"].as_str() == Some("Normal Review") => p["projectTitle"]
                     .as_str()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("Project #{}", project_id)),
+                Some(_) => {
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project is not in regular review yet"}))).into_response();
+                }
                 None => {
                     return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project not found or not in queue"}))).into_response();
                 }
@@ -1336,13 +1354,15 @@ async fn handle_priority_review(
                 return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("Slack error: {}", err)}))).into_response();
             }
 
-            let mut requested = state.priority_review_requests.write().await;
-            requested.insert(project_id, PriorityReviewRequest {
+            let mut records = state.priority_review.write().await;
+            records.insert(project_id, PriorityReviewEntry {
                 project_id,
                 project_title: project_title.clone(),
                 reason: reason.clone(),
                 slack_id: slack_id.clone(),
-                display_name: display_name.clone(),
+                status: PriorityReviewStatus::Pending,
+                decided_by: None,
+                decided_at: None,
             });
 
             Json(serde_json::json!({"ok": true})).into_response()
@@ -1421,35 +1441,31 @@ async fn handle_slack_interaction(
 
     let pid: u64 = project_id.parse().unwrap_or(0);
 
+    // Record the reviewer's decision on the existing record. We never remove it
+    // here — the record (and thus the "already requested" lock) stays until the
+    // project clears regular review, which is handled by the approved endpoint.
+    let decision = match action_id {
+        "approve_priority_review" => Some(PriorityReviewStatus::Approved),
+        "reject_priority_review" => Some(PriorityReviewStatus::Rejected),
+        _ => None,
+    };
+    if let (Some(status), true) = (decision, pid != 0) {
+        let mut records = state.priority_review.write().await;
+        if let Some(entry) = records.get_mut(&pid) {
+            entry.status = status;
+            entry.decided_by = Some(user_name.to_string());
+            entry.decided_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            );
+        }
+    }
+
     let (action_past, _) = match action_id {
-        "approve_priority_review" => {
-            // Move from requests to approved
-            if pid != 0 {
-                let mut requests = state.priority_review_requests.write().await;
-                if let Some(req) = requests.remove(&pid) {
-                    let mut approved = state.priority_review_approved.write().await;
-                    approved.push(PriorityReviewApproval {
-                        project_id: req.project_id,
-                        project_title: req.project_title,
-                        reason: req.reason,
-                        approved_by: user_name.to_string(),
-                        approved_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                        slack_id: req.slack_id,
-                    });
-                }
-            }
-            ("approved", "Approved")
-        }
-        "reject_priority_review" => {
-            if pid != 0 {
-                let mut requests = state.priority_review_requests.write().await;
-                requests.remove(&pid);
-            }
-            ("rejected", "Rejected")
-        }
+        "approve_priority_review" => ("approved", "Approved"),
+        "reject_priority_review" => ("rejected", "Rejected"),
         _ => ("unknown", "Unknown"),
     };
 
@@ -1518,12 +1534,12 @@ async fn handle_priority_review_approved(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid or missing API key — send Authorization: Bearer <key> or ?key=<key>"}))).into_response();
     }
 
-    // A project stays on the approved list until it clears *normal* review
-    // (reviewPassed && approvalStatus == "approved"), not merely when it leaves
-    // the queue. Prune those entries here (write-side) rather than re-filtering a
-    // growing vec on every request — this keeps the stored list bounded. The
-    // past-reviews fetch is cached (60s), so this stays cheap. If the fetch
-    // fails we skip pruning and return the list as-is.
+    // A record stays on the list — through pending, approved, and rejected —
+    // until its project clears *normal* review (reviewPassed && approvalStatus ==
+    // "approved"), not merely when it leaves the queue. Prune those entries here
+    // (write-side) so the stored map stays bounded and re-requesting only unlocks
+    // once the project is no longer in the list. The past-reviews fetch is cached
+    // (60s), so this stays cheap. If it fails we skip pruning and return as-is.
     if let Ok(pr) = state.client.get_past_reviews().await {
         if let Some(reviews) = pr["reviews"].as_array() {
             let normally_approved: std::collections::HashSet<u64> = reviews
@@ -1536,14 +1552,15 @@ async fn handle_priority_review_approved(
                 .collect();
 
             if !normally_approved.is_empty() {
-                let mut approved = state.priority_review_approved.write().await;
-                approved.retain(|a| !normally_approved.contains(&a.project_id));
+                let mut records = state.priority_review.write().await;
+                records.retain(|pid, _| !normally_approved.contains(pid));
             }
         }
     }
 
-    let approved = state.priority_review_approved.read().await;
-    (StatusCode::OK, Json(serde_json::json!({ "approved": &*approved }))).into_response()
+    let records = state.priority_review.read().await;
+    let list: Vec<&PriorityReviewEntry> = records.values().collect();
+    (StatusCode::OK, Json(serde_json::json!({ "approved": list }))).into_response()
 }
 
 // ── URL encoding helper ──
@@ -1624,8 +1641,7 @@ async fn main() -> anyhow::Result<()> {
         slack_signing_secret,
         priority_review_channel_id,
         priority_review_api_key,
-        priority_review_requests: RwLock::new(HashMap::new()),
-        priority_review_approved: RwLock::new(Vec::new()),
+        priority_review: RwLock::new(HashMap::new()),
     });
 
     // Periodic cleanup of expired pending states and sessions
