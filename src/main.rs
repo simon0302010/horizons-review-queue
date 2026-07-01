@@ -1021,15 +1021,15 @@ async fn handle_my_projects(
     match state.client.find_user_projects(&slack_id).await {
         Ok(mut projects) => {
             // Enrich with priority review status. A project counts as "requested"
-            // (and stays locked) as long as it has a record — through pending,
-            // approved, or rejected — until it clears regular review and the
-            // record is dropped by the approved endpoint.
+            // (locked) if it has a pending or approved record. A rejected record
+            // does NOT lock the project — the user can re-request.
             {
                 let records = state.priority_review.read().await;
                 for p in &mut projects {
                     if let Some(pid) = p["projectId"].as_u64() {
                         if let Some(obj) = p.as_object_mut() {
-                            obj.insert("priorityReviewRequested".into(), serde_json::json!(records.contains_key(&pid)));
+                            let is_locked = records.get(&pid).map_or(false, |e| e.status != PriorityReviewStatus::Rejected);
+                            obj.insert("priorityReviewRequested".into(), serde_json::json!(is_locked));
                         }
                     }
                 }
@@ -1231,13 +1231,14 @@ async fn handle_priority_review(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "reason must be between 1 and 2000 characters"}))).into_response();
     }
 
-    // One request per project: reject if a record already exists (pending,
-    // approved, or rejected). It is only cleared once the project clears
-    // regular review, so this also blocks re-requesting after a rejection.
+    // Block if a non-rejected record already exists (pending or approved).
+    // A rejected record can be re-requested.
     {
         let records = state.priority_review.read().await;
-        if records.contains_key(&project_id) {
-            return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Priority review already requested for this project"}))).into_response();
+        if let Some(entry) = records.get(&project_id) {
+            if entry.status != PriorityReviewStatus::Rejected {
+                return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Priority review already requested for this project"}))).into_response();
+            }
         }
     }
 
