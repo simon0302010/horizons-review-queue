@@ -244,6 +244,7 @@ function escHtml(s) {
 
 // ── Reviewer feedback + timeline ──
 function renderFeedback(p) {
+  if (p.source === 'queue') return '';
   const fb = (p.latestFeedback || '').trim();
   if (!fb) return '';
   return `<div class="project-feedback">
