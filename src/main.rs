@@ -1525,30 +1525,21 @@ async fn handle_priority_review_approved(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid or missing API key — send Authorization: Bearer <key> or ?key=<key>"}))).into_response();
     }
 
-    // Clean up projects that have been regular-review approved (left the queue)
-    {
-        let mut approved = state.priority_review_approved.write().await;
-        let active_ids: std::collections::HashSet<u64> = {
-            let mut ids = std::collections::HashSet::new();
-            let mut seen_slack_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for a in approved.iter() {
-                if seen_slack_ids.insert(a.slack_id.clone()) {
-                    if let Ok(projects) = state.client.find_user_projects(&a.slack_id).await {
-                        for p in &projects {
-                            if let Some(pid) = p["projectId"].as_u64() {
-                                ids.insert(pid);
-                            }
-                        }
-                    }
-                }
-            }
-            ids
-        };
-        approved.retain(|a| active_ids.contains(&a.project_id));
-    }
+    let active_ids = state.client.get_queue().await.ok().and_then(|q| {
+        q.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|item| item["projectId"].as_u64())
+                .collect::<std::collections::HashSet<u64>>()
+        })
+    });
 
     let approved = state.priority_review_approved.read().await;
-    (StatusCode::OK, Json(serde_json::json!({ "approved": approved.clone() }))).into_response()
+    let filtered: Vec<&PriorityReviewApproval> = match active_ids {
+        Some(ref ids) => approved.iter().filter(|a| ids.contains(&a.project_id)).collect(),
+        None => approved.iter().collect(),
+    };
+
+    (StatusCode::OK, Json(serde_json::json!({ "approved": filtered }))).into_response()
 }
 
 // ── URL encoding helper ──
