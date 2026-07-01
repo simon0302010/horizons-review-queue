@@ -1241,8 +1241,7 @@ async fn handle_priority_review(
         }
     }
 
-    // Verify the project belongs to the user and is eligible: it must be a queue
-    // project that has passed fraud and is in regular ("Normal") review. Also pull
+    // Verify the project belongs to the user and is in the queue. Also pull
     // the project type and submitted hours to show in the Slack message.
     let (project_title, project_type, hours) = match state.client.find_user_projects(&slack_id).await {
         Ok(projects) => {
@@ -1250,7 +1249,7 @@ async fn handle_priority_review(
                 p["projectId"].as_u64() == Some(project_id)
                     && p["source"].as_str() == Some("queue")
             }) {
-                Some(p) if p["reviewStage"].as_str() == Some("Normal Review") => {
+                Some(p) => {
                     let title = p["projectTitle"]
                         .as_str()
                         .map(|s| s.to_string())
@@ -1265,9 +1264,6 @@ async fn handle_priority_review(
                         })
                     });
                     (title, ptype, hours)
-                }
-                Some(_) => {
-                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project is not in regular review yet"}))).into_response();
                 }
                 None => {
                     return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project not found or not in queue"}))).into_response();
