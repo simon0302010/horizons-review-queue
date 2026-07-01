@@ -454,6 +454,31 @@ async function initDevBox() {
     input.value = preset;
     apply();
   }
+
+  // Fetch env status for admins
+  loadEnvStatus();
+}
+
+async function loadEnvStatus() {
+  try {
+    const r = await fetch('/api/env-status');
+    if (!r.ok) return;
+    const data = await r.json();
+    const card = document.getElementById('env-card');
+    const content = document.getElementById('env-content');
+    if (!card || !content) return;
+    const list = data.unset;
+    if (!list || !list.length) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    content.innerHTML = `
+      <div class="env-warning">
+        <div class="env-warning-head">The following optional env vars are not set — some features are disabled:</div>
+        <div class="env-var-list">${list.map(v => `<span class="env-var-item">${escHtml(v)}</span>`).join('')}</div>
+      </div>`;
+  } catch { /* ignore */ }
 }
 
 async function loadDevUsers() {

@@ -1326,6 +1326,30 @@ async fn handle_priority_review(
     }
 }
 
+// ── Env-status endpoint (admin only) ──
+
+async fn handle_env_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let mut unset: Vec<&str> = Vec::new();
+    if state.slack_bot_token.is_none() {
+        unset.push("SLACK_BOT_TOKEN");
+    }
+    if state.slack_signing_secret.is_none() {
+        unset.push("SLACK_SIGNING_SECRET");
+    }
+    if state.priority_review_channel_id.is_none() {
+        unset.push("PRIORITY_REVIEW_CHANNEL_ID");
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "unset": unset }))).into_response()
+}
+
 // ── Slack interaction handling ──
 
 fn verify_slack_signature(secret: &str, timestamp: &str, body: &[u8], signature_header: &str) -> bool {
@@ -1518,6 +1542,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/config", get(handle_config))
         .route("/api/dev/users", get(handle_dev_users))
         .route("/api/priority-review", post(handle_priority_review))
+        .route("/api/env-status", get(handle_env_status))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 
