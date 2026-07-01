@@ -1233,7 +1233,7 @@ async fn handle_priority_review(
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": "🚀 Priority Review Requested"
+                    "text": "Priority Review Requested"
                 }
             },
             {
@@ -1326,30 +1326,6 @@ async fn handle_priority_review(
     }
 }
 
-// ── Env-status endpoint (admin only) ──
-
-async fn handle_env_status(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if !state.can_impersonate(&headers).await {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    let mut unset: Vec<&str> = Vec::new();
-    if state.slack_bot_token.is_none() {
-        unset.push("SLACK_BOT_TOKEN");
-    }
-    if state.slack_signing_secret.is_none() {
-        unset.push("SLACK_SIGNING_SECRET");
-    }
-    if state.priority_review_channel_id.is_none() {
-        unset.push("PRIORITY_REVIEW_CHANNEL_ID");
-    }
-
-    (StatusCode::OK, Json(serde_json::json!({ "unset": unset }))).into_response()
-}
-
 // ── Slack interaction handling ──
 
 fn verify_slack_signature(secret: &str, timestamp: &str, body: &[u8], signature_header: &str) -> bool {
@@ -1411,17 +1387,50 @@ async fn handle_slack_interaction(
     let action_id = action["action_id"].as_str().unwrap_or("");
     let project_id = action["value"].as_str().unwrap_or("unknown");
     let user_name = payload["user"]["name"].as_str().unwrap_or("unknown");
+    let channel_id = payload["channel"]["id"].as_str().unwrap_or("");
+    let message_ts = payload["container"]["message_ts"].as_str().unwrap_or("");
 
-    match action_id {
-        "approve_priority_review" => {
-            println!("project {} priority review approved by {}", project_id, user_name);
-        }
-        "reject_priority_review" => {
-            println!("project {} priority review rejected by {}", project_id, user_name);
-        }
-        _ => {
-            println!("unknown slack action '{}' for project {}", action_id, project_id);
-        }
+    let (action_past, _) = match action_id {
+        "approve_priority_review" => ("approved", "Approved"),
+        "reject_priority_review" => ("rejected", "Rejected"),
+        _ => ("unknown", "Unknown"),
+    };
+
+    println!("project {} priority review {} by {}", project_id, action_past, user_name);
+
+    // Update the Slack message to reflect the decision
+    if let Some(bot_token) = &state.slack_bot_token {
+        let updated = serde_json::json!({
+            "channel": channel_id,
+            "ts": message_ts,
+            "text": format!("Priority Review {}", action_past),
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": format!("Priority Review {}", action_past)
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": format!("This priority review request has been *{}* by {}.", action_past, user_name)
+                    }
+                }
+            ]
+        });
+
+        let _ = state
+            .client
+            .client
+            .post("https://slack.com/api/chat.update")
+            .header("Authorization", format!("Bearer {}", bot_token))
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&updated)
+            .send()
+            .await;
     }
 
     StatusCode::OK.into_response()
@@ -1542,7 +1551,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/config", get(handle_config))
         .route("/api/dev/users", get(handle_dev_users))
         .route("/api/priority-review", post(handle_priority_review))
-        .route("/api/env-status", get(handle_env_status))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 
