@@ -7,3 +7,5 @@ img.png
 sample_ui_code/
 Dockerfile
 .dockerignore
+docker-compose.yml
+data/

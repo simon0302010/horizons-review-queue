@@ -35,7 +35,7 @@ A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Ax
 | `SLACK_SIGNING_SECRET` | Slack Signing Secret from your app's Basic Info page. Validates interactive button clicks. Recommended if using Approve/Reject buttons. |
 | `PRIORITY_REVIEW_CHANNEL_ID` | Slack channel ID (e.g. `C0123456789`) where priority review requests are posted. Required for priority review requests. |
 | `PRIORITY_REVIEW_API_KEY` | API key for `GET /api/priority-review/approved`. Send as `Authorization: Bearer <key>` or `?key=<key>`. |
-| `PRIORITY_REVIEW_STORAGE_PATH` | Path to JSON file for persisting priority review records (default: `data/priority_review.json`). |
+| `PRIORITY_REVIEW_STORAGE_PATH` | Path to JSON file for persisting priority review records (default: `data/priority_review.json`; the compose file sets this to `/data/priority_review.json` on a persistent volume). |
 
 ## Running
 
@@ -55,6 +55,16 @@ Then open `http://localhost:3001`.
 The app is a single Axum binary. Deploy it behind a reverse proxy (Caddy, nginx) if you want HTTPS. The `SameSite=Lax` cookie works over HTTP for local dev -- add `Secure` to the cookie header in `src/main.rs` if deploying behind HTTPS.
 
 Make sure the `HCA_REDIRECT_URI` points to the public URL of your deployed instance.
+
+### Docker Compose / Coolify
+
+Deploy with `docker-compose.yml`. It builds the image, runs the container, and mounts a named volume at `/data` so priority review records persist across rebuilds/redeploys (the compose file sets `PRIORITY_REVIEW_STORAGE_PATH=/data/priority_review.json`).
+
+```sh
+docker compose up -d --build
+```
+
+The service only uses `expose` (not `ports`) — Coolify injects its own proxy container and routes to port `3001` over the internal network, so no host port mapping is needed. Set the environment variables above in the Coolify UI (Coolify generates the `.env` that the service reads); for a plain local run, provide a `.env` file alongside the compose file.
 
 ## Slack Bot Setup
 

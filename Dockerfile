@@ -22,7 +22,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as a non-root user.
-RUN useradd --create-home --uid 10001 app
+# Create /data owned by app so the named volume mounted there (see
+# docker-compose.yml) inherits writable ownership on first creation.
+RUN useradd --create-home --uid 10001 app \
+    && mkdir /data \
+    && chown app:app /data
 USER app
 WORKDIR /home/app
 

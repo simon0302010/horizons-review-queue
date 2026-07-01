@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    # Coolify injects its managed environment variables into the service and
+    # generates the .env file during deploy. Locally, this reads your .env.
+    env_file:
+      - .env
+    environment:
+      # Persist priority review records onto the named volume below so they
+      # survive container rebuilds/redeploys.
+      PRIORITY_REVIEW_STORAGE_PATH: /data/priority_review.json
+    # No host port mapping: Coolify injects its own proxy container and routes
+    # to this port over the internal network.
+    expose:
+      - "3001"
+    volumes:
+      - priority-review-data:/data
+
+volumes:
+  priority-review-data:
