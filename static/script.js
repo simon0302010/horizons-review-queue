@@ -110,10 +110,15 @@ async function loadMyProjects() {
           mainBadges = `<span class="badge ${badgeClass}">${badgeLabel}</span>`;
         }
 
+        const title = escHtml(p.projectTitle || '(untitled)');
+        const titleHtml = (p.projectId != null)
+          ? `<a class="project-link" href="https://horizons.hackclub.com/projects/${encodeURIComponent(p.projectId)}" target="_blank" rel="noopener">${title}</a>`
+          : title;
+
         return `<div class="project-item">
           <div class="project-row">
             <div class="project-info">
-              <div class="project-title">${escHtml(p.projectTitle || '(untitled)')}</div>
+              <div class="project-title">${titleHtml}</div>
               <div class="project-meta">${escHtml(meta)}</div>
             </div>
             <div class="project-status">
