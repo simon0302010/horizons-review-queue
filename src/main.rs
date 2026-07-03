@@ -1560,19 +1560,16 @@ async fn handle_priority_review_approved(
     }
 
     // A record stays on the list — through pending, approved, and rejected —
-    // until its project clears *normal* review (reviewPassed && approvalStatus ==
-    // "approved"), not merely when it leaves the queue. Prune those entries here
-    // (write-side) so the stored map stays bounded and re-requesting only unlocks
-    // once the project is no longer in the list. The past-reviews fetch is cached
-    // (60s), so this stays cheap. If it fails we skip pruning and return as-is.
+    // until its project clears *normal* review (reviewPassed == true).
+    // Prune those entries here (write-side) so the stored map stays bounded
+    // and re-requesting only unlocks once the project is no longer in the list.
+    // The past-reviews fetch is cached (60s), so this stays cheap. If it fails
+    // we skip pruning and return as-is.
     if let Ok(pr) = state.client.get_past_reviews().await {
         if let Some(reviews) = pr["reviews"].as_array() {
             let normally_approved: std::collections::HashSet<u64> = reviews
                 .iter()
-                .filter(|r| {
-                    r["reviewPassed"].as_bool().unwrap_or(false)
-                        && r["approvalStatus"].as_str().unwrap_or("") == "approved"
-                })
+                .filter(|r| r["reviewPassed"].as_bool().unwrap_or(false))
                 .filter_map(|r| r["projectId"].as_u64())
                 .collect();
 
