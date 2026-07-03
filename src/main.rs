@@ -1591,7 +1591,8 @@ async fn handle_priority_review_approved(
 }
 
 /// Admin-only: returns approved priority review entries whose normal review
-/// is still pending (no past review at all — not approved, rejected, or otherwise).
+/// is still pending — matching the frontend's getReviewStatus logic so that
+/// projects recently reviewed (approved or rejected) are hidden.
 async fn handle_priority_review_admin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1602,12 +1603,36 @@ async fn handle_priority_review_admin(
 
     // Fetch past reviews once (cached 60s) and reuse for both pruning and filtering.
     let past_reviews = state.client.get_past_reviews().await;
-    let reviewed_set: std::collections::HashSet<u64> = past_reviews
-        .as_ref()
-        .ok()
-        .and_then(|pr| pr["reviews"].as_array())
-        .map(|a| a.iter().filter_map(|r| r["projectId"].as_u64()).collect())
-        .unwrap_or_default();
+
+    // Build a set of project IDs whose *latest* past review is decisive
+    // (approved or rejected), matching the frontend's getReviewStatus logic:
+    //   reviewPassed == true  → Approved   → decisive
+    //   reviewPassed == false → Rejected   → decisive
+    //   reviewPassed == null  + approvalStatus "approved" → decisive
+    //   reviewPassed == null  + approvalStatus "rejected" → decisive
+    //   everything else       → Pending    → not decisive
+    // Reviews are newest-first from the API, so the first entry per project
+    // is the latest review. Once we've seen a project we skip older entries.
+    let mut latest_decided: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut seen_project: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    if let Some(reviews) = past_reviews.as_ref().ok().and_then(|pr| pr["reviews"].as_array()) {
+        for r in reviews {
+            let pid = match r["projectId"].as_u64() {
+                Some(id) => id,
+                None => continue,
+            };
+            if !seen_project.insert(pid) {
+                continue; // already processed the latest entry for this project
+            }
+            let decisive = match r["reviewPassed"].as_bool() {
+                Some(_) => true,     // true → Approved, false → Rejected — both decisive
+                None => matches!(r["approvalStatus"].as_str(), Some("approved" | "rejected")),
+            };
+            if decisive {
+                latest_decided.insert(pid);
+            }
+        }
+    }
 
     // Prune normally-approved projects from the map (write-side) so the stored
     // map stays bounded — same logic as the /approved endpoint.
@@ -1629,12 +1654,11 @@ async fn handle_priority_review_admin(
         save_priority_reviews(&state).await;
     }
 
-    // Return only Approved entries that are still pending normal review
-    // (i.e., have no past review entry at all, regardless of outcome).
+    // Return only Approved entries whose normal review is still pending.
     let records = state.priority_review.read().await;
     let mut list: Vec<&PriorityReviewEntry> = records
         .values()
-        .filter(|e| matches!(e.status, PriorityReviewStatus::Approved) && !reviewed_set.contains(&e.project_id))
+        .filter(|e| matches!(e.status, PriorityReviewStatus::Approved) && !latest_decided.contains(&e.project_id))
         .collect();
     list.sort_by(|a, b| b.project_id.cmp(&a.project_id));
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
