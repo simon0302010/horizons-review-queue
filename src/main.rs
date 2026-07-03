@@ -1590,9 +1590,8 @@ async fn handle_priority_review_approved(
     (StatusCode::OK, Json(serde_json::json!({ "approved": list }))).into_response()
 }
 
-/// Admin-only: returns approved priority review entries that haven't cleared
-/// normal review yet, with project title, submitter name, reason, and a
-/// direct review link.
+/// Admin-only: returns approved priority review entries whose normal review
+/// is still pending (no past review at all — not approved, rejected, or otherwise).
 async fn handle_priority_review_admin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1601,27 +1600,41 @@ async fn handle_priority_review_admin(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    // Prune normally-approved projects the same way the /approved endpoint does.
-    if let Ok(pr) = state.client.get_past_reviews().await {
-        if let Some(reviews) = pr["reviews"].as_array() {
-            let normally_approved: std::collections::HashSet<u64> = reviews
-                .iter()
+    // Fetch past reviews once (cached 60s) and reuse for both pruning and filtering.
+    let past_reviews = state.client.get_past_reviews().await;
+    let reviewed_set: std::collections::HashSet<u64> = past_reviews
+        .as_ref()
+        .ok()
+        .and_then(|pr| pr["reviews"].as_array())
+        .map(|a| a.iter().filter_map(|r| r["projectId"].as_u64()).collect())
+        .unwrap_or_default();
+
+    // Prune normally-approved projects from the map (write-side) so the stored
+    // map stays bounded — same logic as the /approved endpoint.
+    let normally_approved: std::collections::HashSet<u64> = past_reviews
+        .as_ref()
+        .ok()
+        .and_then(|pr| pr["reviews"].as_array())
+        .map(|a| {
+            a.iter()
                 .filter(|r| r["reviewPassed"].as_bool().unwrap_or(false))
                 .filter_map(|r| r["projectId"].as_u64())
-                .collect();
-            if !normally_approved.is_empty() {
-                let mut records = state.priority_review.write().await;
-                records.retain(|pid, _| !normally_approved.contains(pid));
-                drop(records);
-                save_priority_reviews(&state).await;
-            }
-        }
+                .collect()
+        })
+        .unwrap_or_default();
+    if !normally_approved.is_empty() {
+        let mut records = state.priority_review.write().await;
+        records.retain(|pid, _| !normally_approved.contains(pid));
+        drop(records);
+        save_priority_reviews(&state).await;
     }
 
+    // Return only Approved entries that are still pending normal review
+    // (i.e., have no past review entry at all, regardless of outcome).
     let records = state.priority_review.read().await;
     let mut list: Vec<&PriorityReviewEntry> = records
         .values()
-        .filter(|e| matches!(e.status, PriorityReviewStatus::Approved))
+        .filter(|e| matches!(e.status, PriorityReviewStatus::Approved) && !reviewed_set.contains(&e.project_id))
         .collect();
     list.sort_by(|a, b| b.project_id.cmp(&a.project_id));
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
