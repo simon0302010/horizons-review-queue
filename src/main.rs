@@ -1664,6 +1664,60 @@ async fn handle_priority_review_admin(
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
 }
 
+/// Returns aggregate stats about the priority review queue: counts by status
+/// plus how many priority-approved projects have cleared normal review.
+async fn handle_priority_review_stats(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let records = state.priority_review.read().await;
+    let total = records.len();
+    let mut pr_pending = 0usize;
+    let mut pr_approved = 0usize;
+    let mut pr_rejected = 0usize;
+    let mut approved_pids: Vec<u64> = Vec::new();
+    for e in records.values() {
+        match e.status {
+            PriorityReviewStatus::Pending => pr_pending += 1,
+            PriorityReviewStatus::Approved => {
+                pr_approved += 1;
+                approved_pids.push(e.project_id);
+            }
+            PriorityReviewStatus::Rejected => pr_rejected += 1,
+        }
+    }
+    drop(records);
+
+    // Cross-reference with past reviews to see which priority-approved
+    // projects have cleared normal review (reviewPassed == true).
+    let (normal_approved, normal_pending) = if approved_pids.is_empty() {
+        (0usize, 0usize)
+    } else if let Ok(pr) = state.client.get_past_reviews().await {
+        let normally_approved: std::collections::HashSet<u64> = pr["reviews"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|r| r["reviewPassed"].as_bool().unwrap_or(false))
+                    .filter_map(|r| r["projectId"].as_u64())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let normal_approved = approved_pids.iter().filter(|pid| normally_approved.contains(pid)).count();
+        let normal_pending = pr_approved - normal_approved;
+        (normal_approved, normal_pending)
+    } else {
+        (0usize, pr_approved)
+    };
+
+    Json(serde_json::json!({
+        "total": total,
+        "pr_pending": pr_pending,
+        "pr_approved": pr_approved,
+        "pr_rejected": pr_rejected,
+        "normal_approved": normal_approved,
+        "normal_pending": normal_pending,
+    }))
+}
+
 // ── Persistence ──
 
 async fn save_priority_reviews(state: &AppState) {
@@ -1809,6 +1863,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/priority-review", post(handle_priority_review))
         .route("/api/priority-review/approved", get(handle_priority_review_approved))
         .route("/api/priority-review/admin", get(handle_priority_review_admin))
+        .route("/api/priority-review/stats", get(handle_priority_review_stats))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 

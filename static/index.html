@@ -82,6 +82,45 @@
     </div>
   </div>
 
+  <!-- Priority Review Stats card -->
+  <div class="card pr-stats-card" id="pr-stats-card">
+    <div class="card-title">Priority Review</div>
+    <div id="pr-stats-skel">
+      <div class="events-skel" style="width:50%"></div>
+    </div>
+    <div id="pr-stats-content" style="display:none">
+      <div class="pr-stats-section-label">Priority Review Status</div>
+      <div id="pr-stats-total-row" class="total-row" style="display:none">
+        <span class="num" id="pr-stats-total-num"></span>
+        <span class="desc">priority review requests</span>
+      </div>
+      <div class="bar-wrap" id="pr-bar-wrap">
+        <div class="bar-seg" id="pr-seg-pending" style="background:#facc15;width:0%"><span></span></div>
+        <div class="bar-seg" id="pr-seg-approved" style="background:#22c55e;width:0%"><span></span></div>
+        <div class="bar-seg" id="pr-seg-rejected" style="background:#e05632;width:0%"><span></span></div>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><span class="dot" style="background:#facc15"></span> Pending</div>
+        <div class="legend-item"><span class="dot" style="background:#22c55e"></span> Approved</div>
+        <div class="legend-item"><span class="dot" style="background:#e05632"></span> Rejected</div>
+      </div>
+
+      <div class="pr-stats-section-label" style="margin-top:24px">Normal Review of Priority-Approved</div>
+      <div id="pr-stats-normal-total-row" class="total-row" style="display:none">
+        <span class="num" id="pr-stats-normal-total-num"></span>
+        <span class="desc">priority-approved projects</span>
+      </div>
+      <div class="bar-wrap" id="pr-bar-normal-wrap">
+        <div class="bar-seg" id="pr-seg-normal-approved" style="background:#22c55e;width:0%"><span></span></div>
+        <div class="bar-seg" id="pr-seg-normal-pending" style="background:#facc15;width:0%"><span></span></div>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><span class="dot" style="background:#22c55e"></span> Normal Approved</div>
+        <div class="legend-item"><span class="dot" style="background:#facc15"></span> Normal Pending</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Events card -->
   <div class="card events-card">
     <div class="card-title">Event Approved Hours</div>

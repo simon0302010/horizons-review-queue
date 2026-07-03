@@ -648,10 +648,60 @@ async function initAdminPanel() {
   setInterval(loadAdmin, 30000);
 }
 
+// ── Priority Review Stats ──
+
+function renderPrBar(total, segs) {
+  const pct = v => total > 0 ? (v / total) * 100 : 0;
+  for (const s of segs) {
+    const el = document.getElementById(s.id);
+    el.style.width = pct(s.v) + '%';
+    el.querySelector('span').textContent = s.v > 0 ? s.v : '';
+  }
+}
+
+async function loadPriorityReviewStats() {
+  const skel = document.getElementById('pr-stats-skel');
+  const cont = document.getElementById('pr-stats-content');
+  try {
+    const r = await fetch('/api/priority-review/stats');
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    skel.style.display = 'none';
+    cont.style.display = '';
+
+    const prTotal = d.pr_pending + d.pr_approved + d.pr_rejected;
+    if (prTotal > 0) {
+      document.getElementById('pr-stats-total-row').style.display = '';
+      document.getElementById('pr-stats-total-num').textContent = prTotal;
+    }
+    renderPrBar(prTotal, [
+      { id: 'pr-seg-pending',  v: d.pr_pending },
+      { id: 'pr-seg-approved',  v: d.pr_approved },
+      { id: 'pr-seg-rejected',  v: d.pr_rejected },
+    ]);
+
+    const normalTotal = d.normal_approved + d.normal_pending;
+    if (normalTotal > 0) {
+      document.getElementById('pr-stats-normal-total-row').style.display = '';
+      document.getElementById('pr-stats-normal-total-num').textContent = normalTotal;
+    }
+    renderPrBar(normalTotal, [
+      { id: 'pr-seg-normal-approved', v: d.normal_approved },
+      { id: 'pr-seg-normal-pending',  v: d.normal_pending },
+    ]);
+  } catch (e) {
+    console.error('Failed to load priority review stats:', e);
+    skel.style.display = '';
+    cont.style.display = 'none';
+  }
+}
+
 loadStats();
 setInterval(loadStats, 30000);
 loadEvents();
 setInterval(loadEvents, 30000);
+loadPriorityReviewStats();
+setInterval(loadPriorityReviewStats, 30000);
 checkAuth();
 initDevBox();
 initAdminPanel();
