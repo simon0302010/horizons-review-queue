@@ -680,15 +680,6 @@ async function loadPriorityReviewStats() {
       { id: 'pr-seg-rejected',  v: d.pr_rejected },
     ]);
 
-    const normalTotal = d.normal_approved + d.normal_pending;
-    if (normalTotal > 0) {
-      document.getElementById('pr-stats-normal-total-row').style.display = '';
-      document.getElementById('pr-stats-normal-total-num').textContent = normalTotal;
-    }
-    renderPrBar(normalTotal, [
-      { id: 'pr-seg-normal-approved', v: d.normal_approved },
-      { id: 'pr-seg-normal-pending',  v: d.normal_pending },
-    ]);
   } catch (e) {
     console.error('Failed to load priority review stats:', e);
     skel.style.display = '';
