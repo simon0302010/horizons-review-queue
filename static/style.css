@@ -691,3 +691,10 @@ body {
 }
 .btn-secondary:hover { background: #ffe9c7; transform: scale(1.04); }
 .btn-secondary:active { transform: scale(0.96); box-shadow: 1px 1px 0 0 #000; }
+
+/* ── Admin: Priority Review Queue ── */
+.admin-card {
+  margin-top: 20px;
+  max-height: 500px;
+  overflow-y: auto;
+}
