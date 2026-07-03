@@ -53,6 +53,8 @@ struct PriorityReviewEntry {
     project_title: String,
     reason: String,
     slack_id: String,
+    #[serde(default)]
+    display_name: String,
     status: PriorityReviewStatus,
     // Who acted on the request in Slack, and when — set on approve/reject only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1379,6 +1381,7 @@ async fn handle_priority_review(
                 project_title: project_title.clone(),
                 reason: reason.clone(),
                 slack_id: slack_id.clone(),
+                display_name: display_name.clone(),
                 status: PriorityReviewStatus::Pending,
                 decided_by: None,
                 decided_at: None,
@@ -1587,6 +1590,21 @@ async fn handle_priority_review_approved(
     (StatusCode::OK, Json(serde_json::json!({ "approved": list }))).into_response()
 }
 
+/// Admin-only: returns all priority review entries (pending, approved, rejected)
+/// with project title, submitter name, reason, status, and a direct link.
+async fn handle_priority_review_admin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let records = state.priority_review.read().await;
+    let mut list: Vec<&PriorityReviewEntry> = records.values().collect();
+    list.sort_by(|a, b| b.project_id.cmp(&a.project_id));
+    (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
+}
+
 // ── Persistence ──
 
 async fn save_priority_reviews(state: &AppState) {
@@ -1731,6 +1749,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/dev/users", get(handle_dev_users))
         .route("/api/priority-review", post(handle_priority_review))
         .route("/api/priority-review/approved", get(handle_priority_review_approved))
+        .route("/api/priority-review/admin", get(handle_priority_review_admin))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 

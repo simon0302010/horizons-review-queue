@@ -583,9 +583,75 @@ document.getElementById('priority-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closePriorityModal();
 });
 
+// ── Admin: Priority Review Queue ──
+
+async function initAdminPanel() {
+  let isAdmin = false;
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    isAdmin = !!d.impersonate;
+  } catch { return; }
+  if (!isAdmin) return;
+
+  const card = document.getElementById('admin-card');
+  const skel = document.getElementById('admin-skel');
+  const cont = document.getElementById('admin-content');
+  if (!card || !skel || !cont) return;
+  card.style.display = '';
+
+  async function loadAdmin() {
+    try {
+      const r = await fetch('/api/priority-review/admin');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      const entries = data.entries || [];
+      skel.style.display = 'none';
+      cont.style.display = '';
+      if (!entries.length) {
+        cont.innerHTML = '<div class="island-empty">No priority review requests.</div>';
+        return;
+      }
+      cont.innerHTML = entries.map(e => {
+        const name = escHtml(e.display_name || e.slack_id);
+        const title = escHtml(e.project_title || `Project #${e.projectId}`);
+        const reason = escHtml((e.reason || '').slice(0, 120));
+        const status = e.status || 'unknown';
+        const statusClass = status === 'approved' ? 'badge-status-approved'
+          : status === 'rejected' ? 'badge-status-rejected'
+          : 'badge-status-pending';
+        const reviewUrl = `https://horizons.hackclub.com/admin/review/${e.project_id}`;
+        return `<div class="project-item">
+          <div class="project-row" style="flex-wrap:wrap;gap:4px 12px">
+            <div class="project-info" style="flex:1;min-width:200px">
+              <div class="project-title">
+                <a class="project-link" href="${reviewUrl}" target="_blank" rel="noopener">${title}</a>
+              </div>
+              <div class="project-meta">${name}</div>
+            </div>
+            <div class="project-status" style="gap:6px">
+              <span class="badge ${statusClass}">${status}</span>
+              <a class="hca-btn" style="font-size:12px;padding:4px 10px;text-decoration:none" href="${reviewUrl}" target="_blank" rel="noopener">Review →</a>
+            </div>
+          </div>
+          ${reason ? `<div class="project-feedback" style="margin-top:2px"><span class="feedback-label">Reason</span><span class="feedback-text">${reason}${e.reason.length > 120 ? '…' : ''}</span></div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) {
+      console.error('Failed to load priority review admin:', e);
+      skel.style.display = '';
+      cont.style.display = 'none';
+    }
+  }
+
+  await loadAdmin();
+  setInterval(loadAdmin, 30000);
+}
+
 loadStats();
 setInterval(loadStats, 30000);
 loadEvents();
 setInterval(loadEvents, 30000);
 checkAuth();
 initDevBox();
+initAdminPanel();
