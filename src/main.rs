@@ -1654,11 +1654,11 @@ async fn handle_priority_review_admin(
         save_priority_reviews(&state).await;
     }
 
-    // Return only Approved entries whose normal review is still pending.
+    // Return all priority review entries whose normal review is still pending.
     let records = state.priority_review.read().await;
     let mut list: Vec<&PriorityReviewEntry> = records
         .values()
-        .filter(|e| matches!(e.status, PriorityReviewStatus::Approved) && !latest_decided.contains(&e.project_id))
+        .filter(|e| !latest_decided.contains(&e.project_id))
         .collect();
     list.sort_by(|a, b| b.project_id.cmp(&a.project_id));
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
