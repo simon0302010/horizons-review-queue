@@ -1687,9 +1687,34 @@ async fn handle_reviewer_hours(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let _slack_id = match resolve_session_slack_id(&state, &headers).await {
+    let slack_id = match resolve_session_slack_id(&state, &headers).await {
         Ok(id) => id,
         Err(e) => return e,
+    };
+
+    // Get the user's display name so we can find their reviewerId in the
+    // stats leaderboard (past reviews include all reviewers' data).
+    let display_name = state.client.get_display_name(&slack_id).await;
+
+    let reviewer_id: Option<String> = if let Some(ref name) = display_name {
+        state.client.get_stats().await.ok().and_then(|stats| {
+            stats["leaderboard"]["allTime"].as_array()?.iter().find_map(|e| {
+                if e["name"].as_str() == Some(name) {
+                    e["reviewerId"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+    } else {
+        None
+    };
+
+    let reviewer_id = match reviewer_id {
+        Some(id) => id,
+        None => {
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "could not resolve reviewer identity"}))).into_response();
+        }
     };
 
     let past_reviews = match state.client.get_past_reviews().await {
@@ -1700,28 +1725,14 @@ async fn handle_reviewer_hours(
         }
     };
 
-    // Deduplicate by project ID — keep only the latest review per project so
-    // resubmissions don't inflate the count (same pattern as compute_event_stats).
-    let mut by_project: std::collections::BTreeMap<u64, (String, serde_json::Value)> = std::collections::BTreeMap::new();
-    for r in &past_reviews {
-        let pid = match r["projectId"].as_u64() {
-            Some(id) => id,
-            None => continue,
-        };
-        let reviewed_at = r["reviewedAt"].as_str().unwrap_or("");
-        let should_replace = by_project
-            .get(&pid)
-            .map(|(ts, _)| reviewed_at > ts.as_str())
-            .unwrap_or(true);
-        if should_replace {
-            by_project.insert(pid, (reviewed_at.to_string(), r.clone()));
-        }
-    }
-
     let mut by_event: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> = std::collections::BTreeMap::new();
 
-    for (_, (_, item)) in &by_project {
-        let user = &item["user"];
+    for r in &past_reviews {
+        // Filter by reviewer — only count this user's own reviews.
+        if r["reviewerId"].as_str() != Some(reviewer_id.as_str()) {
+            continue;
+        }
+        let user = &r["user"];
         let slug = user["eventSlug"].as_str().unwrap_or("").to_string();
         if slug.eq_ignore_ascii_case("sol") {
             continue;
@@ -1731,7 +1742,7 @@ async fn handle_reviewer_hours(
             m.insert("slug".into(), serde_json::json!(slug));
             m.insert("title".into(), serde_json::json!("Other"));
             m.insert("hours".into(), serde_json::json!(0.0));
-            m.insert("projects".into(), serde_json::json!(0));
+            m.insert("reviews".into(), serde_json::json!(0));
             m
         });
         if !slug.is_empty() {
@@ -1739,13 +1750,13 @@ async fn handle_reviewer_hours(
                 entry.insert("title".into(), serde_json::json!(t));
             }
         }
-        let hours = item["approvedHours"].as_f64().unwrap_or(0.0);
+        let hours = r["approvedHours"].as_f64().unwrap_or(0.0);
         let prev = entry["hours"].as_f64().unwrap_or(0.0);
         entry.insert("hours".into(), serde_json::json!(
             (prev * 100.0 + hours * 100.0).round() / 100.0
         ));
-        entry.insert("projects".into(), serde_json::json!(
-            entry["projects"].as_i64().unwrap_or(0) + 1
+        entry.insert("reviews".into(), serde_json::json!(
+            entry["reviews"].as_i64().unwrap_or(0) + 1
         ));
     }
 

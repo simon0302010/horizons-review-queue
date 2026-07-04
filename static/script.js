@@ -675,8 +675,8 @@ function initReviewerHours() {
         data.events.map(e => `<div class="event-blob">
           <div class="event-blob-name">${escHtml(e.title)}</div>
           <div class="event-stat">
-            <div class="event-stat-num">${e.projects}</div>
-            <div class="event-stat-label">projects</div>
+            <div class="event-stat-num">${e.reviews}</div>
+            <div class="event-stat-label">reviews</div>
           </div>
           <div class="event-stat">
             <div class="event-stat-num event-stat-num-sm">${Math.round(e.hours)}</div>
