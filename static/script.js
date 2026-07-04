@@ -646,6 +646,53 @@ async function initAdminPanel() {
 
   await loadAdmin();
   setInterval(loadAdmin, 30000);
+  initReviewerHours();
+}
+
+let hoursInterval;
+
+function initReviewerHours() {
+  const card = document.getElementById('hours-card');
+  const skel = document.getElementById('hours-skel');
+  const cont = document.getElementById('hours-content');
+  if (!card || !skel || !cont) return;
+  card.style.display = '';
+
+  async function loadHours() {
+    try {
+      const r = await fetch('/api/reviewer/hours');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      if (!data.events || !data.events.length) {
+        skel.style.display = 'none';
+        cont.style.display = '';
+        cont.innerHTML = '<div class="island-empty">No reviewed hours yet.</div>';
+        return;
+      }
+      skel.style.display = 'none';
+      cont.style.display = '';
+      cont.innerHTML = '<div class="events-grid">' +
+        data.events.map(e => `<div class="event-blob">
+          <div class="event-blob-name">${escHtml(e.title)}</div>
+          <div class="event-stat">
+            <div class="event-stat-num">${e.projects}</div>
+            <div class="event-stat-label">projects</div>
+          </div>
+          <div class="event-stat">
+            <div class="event-stat-num event-stat-num-sm">${Math.round(e.hours)}</div>
+            <div class="event-stat-label">hours</div>
+          </div>
+        </div>`).join('') +
+        '</div>';
+    } catch (e) {
+      console.error('Failed to load reviewer hours:', e);
+      skel.style.display = '';
+      cont.style.display = 'none';
+    }
+  }
+
+  loadHours();
+  hoursInterval = setInterval(loadHours, 30000);
 }
 
 // ── Priority Review Stats ──

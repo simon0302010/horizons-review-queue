@@ -1681,6 +1681,60 @@ async fn handle_priority_review_admin(
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
 }
 
+/// Protected endpoint: returns the authenticated reviewer's total approved hours
+/// per Horizons event. Requires a valid session so reviewer identity is not leaked.
+async fn handle_reviewer_hours(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let _slack_id = match resolve_session_slack_id(&state, &headers).await {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+
+    let past_reviews = match state.client.get_past_reviews().await {
+        Ok(pr) => pr["reviews"].as_array().cloned().unwrap_or_default(),
+        Err(e) => {
+            eprintln!("get_past_reviews error: {}", e);
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "failed to fetch reviews"}))).into_response();
+        }
+    };
+
+    let mut by_event: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> = std::collections::BTreeMap::new();
+
+    for r in &past_reviews {
+        let user = &r["user"];
+        let slug = user["eventSlug"].as_str().unwrap_or("").to_string();
+        if slug.eq_ignore_ascii_case("sol") {
+            continue;
+        }
+        let entry = by_event.entry(slug.clone()).or_insert_with(|| {
+            let mut m = serde_json::Map::new();
+            m.insert("slug".into(), serde_json::json!(slug));
+            m.insert("title".into(), serde_json::json!("Other"));
+            m.insert("hours".into(), serde_json::json!(0.0));
+            m.insert("projects".into(), serde_json::json!(0));
+            m
+        });
+        if !slug.is_empty() {
+            if let Some(t) = user["eventTitle"].as_str().filter(|t| !t.is_empty()) {
+                entry.insert("title".into(), serde_json::json!(t));
+            }
+        }
+        let hours = r["approvedHours"].as_f64().unwrap_or(0.0);
+        let prev = entry["hours"].as_f64().unwrap_or(0.0);
+        entry.insert("hours".into(), serde_json::json!(
+            (prev * 100.0 + hours * 100.0).round() / 100.0
+        ));
+        entry.insert("projects".into(), serde_json::json!(
+            entry["projects"].as_i64().unwrap_or(0) + 1
+        ));
+    }
+
+    let out: Vec<serde_json::Value> = by_event.into_values().map(serde_json::Value::Object).collect();
+    (StatusCode::OK, Json(serde_json::json!({ "events": out }))).into_response()
+}
+
 /// Returns aggregate stats about the priority review queue: counts by status
 /// plus how many priority-approved projects have cleared normal review.
 async fn handle_priority_review_stats(
@@ -1881,6 +1935,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/priority-review/approved", get(handle_priority_review_approved))
         .route("/api/priority-review/admin", get(handle_priority_review_admin))
         .route("/api/priority-review/stats", get(handle_priority_review_stats))
+        .route("/api/reviewer/hours", get(handle_reviewer_hours))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);
 
