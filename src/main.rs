@@ -56,6 +56,9 @@ struct PriorityReviewEntry {
     #[serde(default)]
     display_name: String,
     status: PriorityReviewStatus,
+    // When the priority review request was submitted (unix seconds).
+    #[serde(default)]
+    created_at: u64,
     // Who acted on the request in Slack, and when — set on approve/reject only.
     #[serde(skip_serializing_if = "Option::is_none")]
     decided_by: Option<String>,
@@ -1376,6 +1379,10 @@ async fn handle_priority_review(
             }
 
             let mut records = state.priority_review.write().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
             records.insert(project_id, PriorityReviewEntry {
                 project_id,
                 project_title: project_title.clone(),
@@ -1383,6 +1390,7 @@ async fn handle_priority_review(
                 slack_id: slack_id.clone(),
                 display_name: display_name.clone(),
                 status: PriorityReviewStatus::Pending,
+                created_at: now,
                 decided_by: None,
                 decided_at: None,
             });
@@ -1669,7 +1677,7 @@ async fn handle_priority_review_admin(
                 && (!latest_decided.contains(&e.project_id) || in_queue.contains(&e.project_id))
         })
         .collect();
-    list.sort_by(|a, b| b.project_id.cmp(&a.project_id));
+    list.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
 }
 
