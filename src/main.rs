@@ -1700,10 +1700,28 @@ async fn handle_reviewer_hours(
         }
     };
 
+    // Deduplicate by project ID — keep only the latest review per project so
+    // resubmissions don't inflate the count (same pattern as compute_event_stats).
+    let mut by_project: std::collections::BTreeMap<u64, (String, serde_json::Value)> = std::collections::BTreeMap::new();
+    for r in &past_reviews {
+        let pid = match r["projectId"].as_u64() {
+            Some(id) => id,
+            None => continue,
+        };
+        let reviewed_at = r["reviewedAt"].as_str().unwrap_or("");
+        let should_replace = by_project
+            .get(&pid)
+            .map(|(ts, _)| reviewed_at > ts.as_str())
+            .unwrap_or(true);
+        if should_replace {
+            by_project.insert(pid, (reviewed_at.to_string(), r.clone()));
+        }
+    }
+
     let mut by_event: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> = std::collections::BTreeMap::new();
 
-    for r in &past_reviews {
-        let user = &r["user"];
+    for (_, (_, item)) in &by_project {
+        let user = &item["user"];
         let slug = user["eventSlug"].as_str().unwrap_or("").to_string();
         if slug.eq_ignore_ascii_case("sol") {
             continue;
@@ -1721,7 +1739,7 @@ async fn handle_reviewer_hours(
                 entry.insert("title".into(), serde_json::json!(t));
             }
         }
-        let hours = r["approvedHours"].as_f64().unwrap_or(0.0);
+        let hours = item["approvedHours"].as_f64().unwrap_or(0.0);
         let prev = entry["hours"].as_f64().unwrap_or(0.0);
         entry.insert("hours".into(), serde_json::json!(
             (prev * 100.0 + hours * 100.0).round() / 100.0
