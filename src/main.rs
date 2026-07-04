@@ -1681,39 +1681,38 @@ async fn handle_priority_review_admin(
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
 }
 
-/// Protected endpoint: returns the authenticated reviewer's total approved hours
-/// per Horizons event. Requires a valid session so reviewer identity is not leaked.
+/// Protected endpoint: returns a reviewer's hours per event.  The reviewer
+/// is identified by a `?name=` query parameter that is matched against the
+/// stats leaderboard.  Auth is still required so reviewer names are not leaked.
 async fn handle_reviewer_hours(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let slack_id = match resolve_session_slack_id(&state, &headers).await {
+    let _slack_id = match resolve_session_slack_id(&state, &headers).await {
         Ok(id) => id,
         Err(e) => return e,
     };
 
-    // Get the user's display name so we can find their reviewerId in the
-    // stats leaderboard (past reviews include all reviewers' data).
-    let display_name = state.client.get_display_name(&slack_id).await;
-
-    let reviewer_id: Option<String> = if let Some(ref name) = display_name {
-        state.client.get_stats().await.ok().and_then(|stats| {
-            stats["leaderboard"]["allTime"].as_array()?.iter().find_map(|e| {
-                if e["name"].as_str() == Some(name) {
-                    e["reviewerId"].as_str().map(|s| s.to_string())
-                } else {
-                    None
-                }
-            })
-        })
-    } else {
-        None
+    let name = match q.get("name").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(n) => n,
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name query param required"}))).into_response();
+        }
     };
 
-    let reviewer_id = match reviewer_id {
+    let reviewer_id = match state.client.get_stats().await.ok().and_then(|stats| {
+        stats["leaderboard"]["allTime"].as_array()?.iter().find_map(|e| {
+            if e["name"].as_str() == Some(name) {
+                e["reviewerId"].as_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+    }) {
         Some(id) => id,
         None => {
-            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "could not resolve reviewer identity"}))).into_response();
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "reviewer not found"}))).into_response();
         }
     };
 
@@ -1728,7 +1727,6 @@ async fn handle_reviewer_hours(
     let mut by_event: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> = std::collections::BTreeMap::new();
 
     for r in &past_reviews {
-        // Filter by reviewer — only count this user's own reviews.
         if r["reviewerId"].as_str() != Some(reviewer_id.as_str()) {
             continue;
         }

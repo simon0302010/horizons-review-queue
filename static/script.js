@@ -649,28 +649,36 @@ async function initAdminPanel() {
   initReviewerHours();
 }
 
-let hoursInterval;
-
 function initReviewerHours() {
   const card = document.getElementById('hours-card');
+  const input = document.getElementById('hours-name-input');
+  const btn = document.getElementById('hours-load-btn');
   const skel = document.getElementById('hours-skel');
   const cont = document.getElementById('hours-content');
-  if (!card || !skel || !cont) return;
+  if (!card || !input || !btn || !skel || !cont) return;
   card.style.display = '';
 
-  async function loadHours() {
+  async function loadHours(name) {
+    if (!name) return;
+    skel.style.display = '';
+    cont.style.display = 'none';
+    cont.innerHTML = '';
     try {
-      const r = await fetch('/api/reviewer/hours');
-      if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
-      if (!data.events || !data.events.length) {
+      const r = await fetch('/api/reviewer/hours?name=' + encodeURIComponent(name));
+      if (!r.ok) {
+        const err = await r.json();
+        cont.innerHTML = '<div class="island-empty">' + escHtml(err.error || 'Error') + '</div>';
         skel.style.display = 'none';
         cont.style.display = '';
+        return;
+      }
+      const data = await r.json();
+      skel.style.display = 'none';
+      cont.style.display = '';
+      if (!data.events || !data.events.length) {
         cont.innerHTML = '<div class="island-empty">No reviewed hours yet.</div>';
         return;
       }
-      skel.style.display = 'none';
-      cont.style.display = '';
       cont.innerHTML = '<div class="events-grid">' +
         data.events.map(e => `<div class="event-blob">
           <div class="event-blob-name">${escHtml(e.title)}</div>
@@ -691,8 +699,8 @@ function initReviewerHours() {
     }
   }
 
-  loadHours();
-  hoursInterval = setInterval(loadHours, 30000);
+  btn.addEventListener('click', () => loadHours(input.value.trim()));
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') loadHours(input.value.trim()); });
 }
 
 // ── Priority Review Stats ──
