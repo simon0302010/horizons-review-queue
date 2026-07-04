@@ -1624,13 +1624,50 @@ async fn handle_priority_review_admin(
         save_priority_reviews(&state).await;
     }
 
-    // Return only priority-review-approved entries. Normally-approved projects
-    // are already pruned from the map above, so any remaining Approved entry is
-    // pending normal review regardless of past review history.
+    // Fetch the current queue to detect resubmissions (projects that were
+    // rejected in normal review but are back in the queue, pending review again).
+    let in_queue: std::collections::HashSet<u64> = state
+        .client
+        .get_queue()
+        .await
+        .ok()
+        .and_then(|q| q.as_array().map(|arr| arr.iter().filter_map(|i| i["projectId"].as_u64()).collect()))
+        .unwrap_or_default();
+
+    // Build a set of project IDs whose *latest* past review is decisive
+    // (approved or rejected). Projects with a decisive past review that are
+    // NOT in the queue are truly done — hide them.
+    let mut latest_decided: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut seen_project: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    if let Some(reviews) = past_reviews.as_ref().ok().and_then(|pr| pr["reviews"].as_array()) {
+        for r in reviews {
+            let pid = match r["projectId"].as_u64() {
+                Some(id) => id,
+                None => continue,
+            };
+            if !seen_project.insert(pid) {
+                continue;
+            }
+            let decisive = match r["reviewPassed"].as_bool() {
+                Some(_) => true,
+                None => matches!(r["approvalStatus"].as_str(), Some("approved" | "rejected")),
+            };
+            if decisive {
+                latest_decided.insert(pid);
+            }
+        }
+    }
+
+    // Show priority-review-approved entries that are still pending normal
+    // review: either they have no decisive past review, or they were rejected
+    // and resubmitted (back in the queue).
     let records = state.priority_review.read().await;
     let mut list: Vec<&PriorityReviewEntry> = records
         .values()
-        .filter(|e| matches!(e.status, PriorityReviewStatus::Approved))
+        .filter(|e| {
+            matches!(e.status, PriorityReviewStatus::Approved)
+                && (!latest_decided.contains(&e.project_id) || in_queue.contains(&e.project_id))
+        })
         .collect();
     list.sort_by(|a, b| b.project_id.cmp(&a.project_id));
     (StatusCode::OK, Json(serde_json::json!({ "entries": list }))).into_response()
