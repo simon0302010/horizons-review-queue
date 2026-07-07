@@ -581,6 +581,9 @@ struct AppState {
     cached_users: RwLock<Option<(Instant, Vec<serde_json::Value>)>>,
     // Slack IDs allowed to impersonate other users while logged in, even in prod.
     admin_users: HashSet<String>,
+    // Additional admins loaded from JSON file (can be modified at runtime).
+    admin_users_from_file: RwLock<HashSet<String>>,
+    admin_users_file_path: String,
     // Priority review Slack integration
     slack_bot_token: Option<String>,
     slack_signing_secret: Option<String>,
@@ -594,13 +597,19 @@ struct AppState {
 
 impl AppState {
     /// May this request view arbitrary users? True in DEV mode, or when the
-    /// logged-in session belongs to a configured admin.
+    /// logged-in session belongs to a configured admin (env var or file).
     async fn can_impersonate(&self, headers: &HeaderMap) -> bool {
         if self.dev_mode {
             return true;
         }
         match session_slack_id(self, headers).await {
-            Some(id) => self.admin_users.contains(&id),
+            Some(id) => {
+                if self.admin_users.contains(&id) {
+                    return true;
+                }
+                let file_admins = self.admin_users_from_file.read().await;
+                file_admins.contains(&id)
+            }
             None => false,
         }
     }
@@ -1158,6 +1167,65 @@ async fn handle_dev_users(
             (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }
+}
+
+// ── Admin user management (file-based) ──
+
+/// List all admin users (env var + file-based). Requires admin session.
+async fn handle_admin_list_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let file_admins = state.admin_users_from_file.read().await;
+    Json(serde_json::json!({
+        "env_admins": state.admin_users,
+        "file_admins": *file_admins,
+    })).into_response()
+}
+
+/// Add a Slack ID to the file-based admin list. Requires admin session.
+async fn handle_admin_add_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let slack_id = match body.get("slack_id").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(id) => id.to_string(),
+        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "slack_id required"}))).into_response(),
+    };
+    let mut file_admins = state.admin_users_from_file.write().await;
+    if file_admins.insert(slack_id) {
+        drop(file_admins);
+        save_admin_users(&state).await;
+    }
+    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+}
+
+/// Remove a Slack ID from the file-based admin list. Requires admin session.
+async fn handle_admin_remove_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let slack_id = match q.get("slack_id").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(id) => id.to_string(),
+        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "slack_id required"}))).into_response(),
+    };
+    let mut file_admins = state.admin_users_from_file.write().await;
+    if file_admins.remove(&slack_id) {
+        drop(file_admins);
+        save_admin_users(&state).await;
+    }
+    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
 }
 
 async fn handle_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -1828,6 +1896,16 @@ async fn save_priority_reviews(state: &AppState) {
     }
 }
 
+async fn save_admin_users(state: &AppState) {
+    let records = state.admin_users_from_file.read().await;
+    if let Ok(json) = serde_json::to_string_pretty(&*records) {
+        drop(records);
+        if let Err(e) = tokio::fs::write(&state.admin_users_file_path, json).await {
+            eprintln!("Failed to save admin users: {}", e);
+        }
+    }
+}
+
 // ── URL encoding helper ──
 
 fn urlencoding(input: &str) -> String {
@@ -1904,6 +1982,17 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| serde_json::from_str::<HashMap<u64, PriorityReviewEntry>>(&s).ok())
         .unwrap_or_default();
 
+    // Additional admins from JSON file (mutable, not from env var).
+    let admin_users_file_path = "data/admin_users.json".to_string();
+    if let Some(parent) = std::path::Path::new(&admin_users_file_path).parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let admin_users_from_file_data = tokio::fs::read_to_string(&admin_users_file_path)
+        .await
+        .ok()
+        .and_then(|s| serde_json::from_str::<HashSet<String>>(&s).ok())
+        .unwrap_or_default();
+
     let state = Arc::new(AppState {
         client,
         hca_client_id,
@@ -1915,6 +2004,8 @@ async fn main() -> anyhow::Result<()> {
         dev_mode,
         cached_users: RwLock::new(None),
         admin_users,
+        admin_users_from_file: RwLock::new(admin_users_from_file_data),
+        admin_users_file_path,
         slack_bot_token,
         slack_signing_secret,
         priority_review_channel_id,
@@ -1962,6 +2053,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/priority-review/approved", get(handle_priority_review_approved))
         .route("/api/priority-review/admin", get(handle_priority_review_admin))
         .route("/api/priority-review/stats", get(handle_priority_review_stats))
+        .route("/api/admin/users", get(handle_admin_list_users).post(handle_admin_add_user).delete(handle_admin_remove_user))
         .route("/api/reviewer/hours", get(handle_reviewer_hours))
         .route("/api/slack/interactions", post(handle_slack_interaction))
         .with_state(state);

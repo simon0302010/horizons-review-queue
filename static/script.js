@@ -647,6 +647,7 @@ async function initAdminPanel() {
   await loadAdmin();
   setInterval(loadAdmin, 30000);
   initReviewerHours();
+  initAdminManagement();
 }
 
 function initReviewerHours() {
@@ -701,6 +702,94 @@ function initReviewerHours() {
 
   btn.addEventListener('click', () => loadHours(input.value.trim()));
   input.addEventListener('keydown', e => { if (e.key === 'Enter') loadHours(input.value.trim()); });
+}
+
+// ── Admin: Manage file-based admin users ──
+
+async function initAdminManagement() {
+  const card = document.getElementById('admin-users-card');
+  const skel = document.getElementById('admin-users-skel');
+  const cont = document.getElementById('admin-users-content');
+  if (!card || !skel || !cont) return;
+  card.style.display = '';
+
+  async function loadAdminUsers() {
+    try {
+      const r = await fetch('/api/admin/users');
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
+      skel.style.display = 'none';
+      cont.style.display = '';
+
+      const envAdmins = data.env_admins || [];
+      const fileAdmins = data.file_admins || [];
+
+      let html = '';
+
+      if (envAdmins.length) {
+        html += '<div style="margin-bottom:10px;font-size:13px;color:#888">Environment admins</div>';
+        html += envAdmins.map(id =>
+          '<div class="admin-user-row"><span>' + escHtml(id) + '</span><span class="badge badge-status-pending" style="font-size:10px">env</span></div>'
+        ).join('');
+      }
+
+      if (fileAdmins.length) {
+        html += '<div style="margin:10px 0;font-size:13px;color:#888">File-based admins</div>';
+        html += fileAdmins.map(id =>
+          '<div class="admin-user-row"><span>' + escHtml(id) + '</span><button class="admin-remove-btn" data-slack-id="' + escHtml(id) + '">Remove</button></div>'
+        ).join('');
+      }
+
+      if (!envAdmins.length && !fileAdmins.length) {
+        html += '<div class="island-empty">No admin users configured.</div>';
+      }
+
+      html += '<div class="admin-add-row">';
+      html += '<input id="admin-add-input" type="text" placeholder="Slack ID…" spellcheck="false">';
+      html += '<button id="admin-add-btn" class="priority-btn">Add Admin</button>';
+      html += '</div>';
+
+      cont.innerHTML = html;
+
+      document.getElementById('admin-add-btn').addEventListener('click', async () => {
+        const input = document.getElementById('admin-add-input');
+        const id = input.value.trim();
+        if (!id) return;
+        try {
+          await fetch('/api/admin/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slack_id: id })
+          });
+          input.value = '';
+          loadAdminUsers();
+        } catch (e) {
+          console.error('Failed to add admin:', e);
+        }
+      });
+      document.getElementById('admin-add-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('admin-add-btn').click();
+      });
+
+      cont.querySelectorAll('.admin-remove-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.slackId;
+          try {
+            await fetch('/api/admin/users?slack_id=' + encodeURIComponent(id), { method: 'DELETE' });
+            loadAdminUsers();
+          } catch (e) {
+            console.error('Failed to remove admin:', e);
+          }
+        });
+      });
+    } catch (e) {
+      console.error('Failed to load admin users:', e);
+      skel.style.display = '';
+      cont.style.display = 'none';
+    }
+  }
+
+  await loadAdminUsers();
 }
 
 // ── Priority Review Stats ──

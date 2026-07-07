@@ -711,3 +711,42 @@ body {
   max-height: 500px;
   overflow-y: auto;
 }
+
+/* ── Admin: User Management ── */
+.admin-user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+}
+.admin-remove-btn {
+  background: none;
+  border: 1px solid #e74c3c;
+  color: #e74c3c;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.admin-remove-btn:hover {
+  background: #e74c3c;
+  color: #fff;
+}
+.admin-add-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  align-items: center;
+}
+.admin-add-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+}
