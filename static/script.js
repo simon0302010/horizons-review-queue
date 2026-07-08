@@ -512,7 +512,16 @@ function populatePriorityDropdown() {
   }
 }
 
+function openPriorityDisclaimer() {
+  document.getElementById('priority-disclaimer-modal').style.display = '';
+}
+
+function closePriorityDisclaimer() {
+  document.getElementById('priority-disclaimer-modal').style.display = 'none';
+}
+
 function openPriorityModal() {
+  closePriorityDisclaimer();
   document.getElementById('priority-error').style.display = 'none';
   document.getElementById('priority-success').style.display = 'none';
   document.getElementById('priority-form').style.display = '';
@@ -526,7 +535,10 @@ function closePriorityModal() {
   document.getElementById('priority-modal').style.display = 'none';
 }
 
-document.getElementById('priority-review-btn').addEventListener('click', openPriorityModal);
+document.getElementById('priority-review-btn').addEventListener('click', openPriorityDisclaimer);
+
+document.getElementById('priority-disclaimer-cancel').addEventListener('click', closePriorityDisclaimer);
+document.getElementById('priority-disclaimer-continue').addEventListener('click', openPriorityModal);
 
 document.getElementById('priority-cancel').addEventListener('click', closePriorityModal);
 
@@ -579,6 +591,9 @@ document.getElementById('priority-form').addEventListener('submit', async (e) =>
 });
 
 // Click modal overlay to close
+document.getElementById('priority-disclaimer-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closePriorityDisclaimer();
+});
 document.getElementById('priority-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closePriorityModal();
 });
