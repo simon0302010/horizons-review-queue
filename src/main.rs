@@ -1795,6 +1795,15 @@ async fn handle_reviewer_hours(
         }
     };
 
+    // Collect fraud-rejected project IDs so we exclude projects that failed fraud.
+    let fraud_rejected_pids: std::collections::HashSet<u64> = match state.client.get_fraud_rejected().await {
+        Ok(fr) => fr.as_array().map(|a| a.iter().filter_map(|r| r["projectId"].as_u64()).collect()).unwrap_or_default(),
+        Err(e) => {
+            eprintln!("get_fraud_rejected error: {}", e);
+            std::collections::HashSet::new()
+        }
+    };
+
     // First pass: keep only review-approved decisions, deduplicate by project
     // keeping the latest approval so re-approved projects only count the delta.
     let mut by_project: std::collections::BTreeMap<u64, (String, serde_json::Value)> = std::collections::BTreeMap::new();
@@ -1809,6 +1818,13 @@ async fn handle_reviewer_hours(
         if r["approvalStatus"].as_str() != Some("approved") {
             continue;
         }
+        let pid = match r["projectId"].as_u64() {
+            Some(id) => id,
+            None => continue,
+        };
+        if fraud_rejected_pids.contains(&pid) {
+            continue;
+        }
         if let Some(sd) = start_date {
             if r["reviewedAt"].as_str().map(|ra| &ra[..ra.len().min(10)] < sd).unwrap_or(true) {
                 continue;
@@ -1819,10 +1835,6 @@ async fn handle_reviewer_hours(
                 continue;
             }
         }
-        let pid = match r["projectId"].as_u64() {
-            Some(id) => id,
-            None => continue,
-        };
         let reviewed_at = r["reviewedAt"].as_str().unwrap_or("");
         let should_replace = by_project
             .get(&pid)
