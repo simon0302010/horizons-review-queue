@@ -653,6 +653,8 @@ async function initAdminPanel() {
 function initReviewerHours() {
   const card = document.getElementById('hours-card');
   const input = document.getElementById('hours-name-input');
+  const startDate = document.getElementById('hours-start-date');
+  const endDate = document.getElementById('hours-end-date');
   const btn = document.getElementById('hours-load-btn');
   const skel = document.getElementById('hours-skel');
   const cont = document.getElementById('hours-content');
@@ -665,7 +667,10 @@ function initReviewerHours() {
     cont.style.display = 'none';
     cont.innerHTML = '';
     try {
-      const r = await fetch('/api/reviewer/hours?name=' + encodeURIComponent(name));
+      let url = '/api/reviewer/hours?name=' + encodeURIComponent(name);
+      if (startDate.value) url += '&startDate=' + encodeURIComponent(startDate.value);
+      if (endDate.value) url += '&endDate=' + encodeURIComponent(endDate.value);
+      const r = await fetch(url);
       if (!r.ok) {
         const err = await r.json();
         cont.innerHTML = '<div class="island-empty">' + escHtml(err.error || 'Error') + '</div>';

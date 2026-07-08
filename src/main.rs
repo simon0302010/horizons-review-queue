@@ -1769,6 +1769,9 @@ async fn handle_reviewer_hours(
         }
     };
 
+    let start_date = q.get("startDate").map(|s| s.trim()).filter(|s| !s.is_empty());
+    let end_date = q.get("endDate").map(|s| s.trim()).filter(|s| !s.is_empty());
+
     let reviewer_id = match state.client.get_stats().await.ok().and_then(|stats| {
         stats["leaderboard"]["allTime"].as_array()?.iter().find_map(|e| {
             if e["name"].as_str() == Some(name) {
@@ -1805,6 +1808,16 @@ async fn handle_reviewer_hours(
         }
         if r["approvalStatus"].as_str() != Some("approved") {
             continue;
+        }
+        if let Some(sd) = start_date {
+            if r["reviewedAt"].as_str().map(|ra| &ra[..ra.len().min(10)] < sd).unwrap_or(true) {
+                continue;
+            }
+        }
+        if let Some(ed) = end_date {
+            if r["reviewedAt"].as_str().map(|ra| &ra[..ra.len().min(10)] > ed).unwrap_or(true) {
+                continue;
+            }
         }
         let pid = match r["projectId"].as_u64() {
             Some(id) => id,
