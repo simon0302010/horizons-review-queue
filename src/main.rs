@@ -1792,12 +1792,38 @@ async fn handle_reviewer_hours(
         }
     };
 
-    let mut by_event: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> = std::collections::BTreeMap::new();
+    // First pass: keep only review-approved decisions, deduplicate by project
+    // keeping the latest approval so re-approved projects only count the delta.
+    let mut by_project: std::collections::BTreeMap<u64, (String, serde_json::Value)> = std::collections::BTreeMap::new();
 
     for r in &past_reviews {
         if r["reviewerId"].as_str() != Some(reviewer_id.as_str()) {
             continue;
         }
+        if !r["reviewPassed"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        if r["approvalStatus"].as_str() != Some("approved") {
+            continue;
+        }
+        let pid = match r["projectId"].as_u64() {
+            Some(id) => id,
+            None => continue,
+        };
+        let reviewed_at = r["reviewedAt"].as_str().unwrap_or("");
+        let should_replace = by_project
+            .get(&pid)
+            .map(|(ts, _)| reviewed_at > ts.as_str())
+            .unwrap_or(true);
+        if should_replace {
+            by_project.insert(pid, (reviewed_at.to_string(), r.clone()));
+        }
+    }
+
+    // Second pass: aggregate deduplicated approved reviews by event.
+    let mut by_event: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> = std::collections::BTreeMap::new();
+
+    for (_, (_, r)) in &by_project {
         let user = &r["user"];
         let slug = user["eventSlug"].as_str().unwrap_or("").to_string();
         if slug.eq_ignore_ascii_case("sol") {
