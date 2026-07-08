@@ -1815,7 +1815,8 @@ async fn handle_reviewer_hours(
         if !r["reviewPassed"].as_bool().unwrap_or(false) {
             continue;
         }
-        if r["approvalStatus"].as_str() != Some("approved") {
+        let approval_status = r["approvalStatus"].as_str();
+        if approval_status != Some("approved") && approval_status != Some("pending") {
             continue;
         }
         let pid = match r["projectId"].as_u64() {
