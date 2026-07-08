@@ -10,6 +10,9 @@ services:
       # Persist priority review records onto the named volume below so they
       # survive container rebuilds/redeploys.
       PRIORITY_REVIEW_STORAGE_PATH: /data/priority_review.json
+      # Persist the file-based admin list onto the same named volume so admins
+      # added at runtime survive container rebuilds/redeploys.
+      ADMIN_USERS_STORAGE_PATH: /data/admin_users.json
     # No host port mapping: Coolify injects its own proxy container and routes
     # to this port over the internal network.
     expose:

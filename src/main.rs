@@ -2035,7 +2035,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_default();
 
     // Additional admins from JSON file (mutable, not from env var).
-    let admin_users_file_path = "data/admin_users.json".to_string();
+    let admin_users_file_path = std::env::var("ADMIN_USERS_STORAGE_PATH")
+        .unwrap_or_else(|_| "data/admin_users.json".to_string());
     if let Some(parent) = std::path::Path::new(&admin_users_file_path).parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
