@@ -893,6 +893,7 @@ async function initSessionIdCard() {
       if (!r.ok) throw new Error();
       const d = await r.json();
       skel.style.display = 'none';
+      cont.style.display = '';
       const statusEl = document.getElementById('session-id-status');
       if (d.overridden) {
         statusEl.textContent = '⚠️ Session ID has been overridden (active until reset or restart).';
