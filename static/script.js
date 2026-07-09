@@ -101,7 +101,7 @@ async function loadMyProjects() {
 
   island.classList.add('open');
   const titleText = document.getElementById('island-title-text');
-  if (titleText) titleText.textContent = devUser ? `Projects · ${devUser}` : 'My Submitted Projects';
+  if (titleText) titleText.textContent = devUser ? `Projects · ${devUser}` : 'My Project Approvals';
   const who = devUser ? ` for ${escHtml(devUser)}` : '';
   content.innerHTML = `<div class="island-loading">Loading projects${who}...</div>`;
 
@@ -748,26 +748,26 @@ async function initAdminManagement() {
       let html = '';
 
       if (envAdmins.length) {
-        html += '<div style="margin-bottom:10px;font-size:13px;color:#888">Environment admins</div>';
+        html += '<div class="admin-section-label">Environment Admins</div>';
         html += envAdmins.map(id =>
-          '<div class="admin-user-row"><span>' + escHtml(id) + '</span><span class="badge badge-status-pending" style="font-size:10px">env</span></div>'
+          '<div class="admin-user-row"><span class="admin-user-id">' + escHtml(id) + '</span><span class="badge badge-status-pending" style="font-size:10px">env</span></div>'
         ).join('');
       }
 
       if (fileAdmins.length) {
-        html += '<div style="margin:10px 0;font-size:13px;color:#888">File-based admins</div>';
+        html += '<div class="admin-section-label">File-based Admins</div>';
         html += fileAdmins.map(id =>
-          '<div class="admin-user-row"><span>' + escHtml(id) + '</span><button class="admin-remove-btn" data-slack-id="' + escHtml(id) + '">Remove</button></div>'
+          '<div class="admin-user-row"><span class="admin-user-id">' + escHtml(id) + '</span><button class="admin-remove-btn" data-slack-id="' + escHtml(id) + '">Remove</button></div>'
         ).join('');
       }
 
       if (!envAdmins.length && !fileAdmins.length) {
-        html += '<div class="island-empty">No admin users configured.</div>';
+        html += '<div class="admin-empty">No admin users configured.</div>';
       }
 
       html += '<div class="admin-add-row">';
-      html += '<input id="admin-add-input" type="text" placeholder="Slack ID…" spellcheck="false">';
-      html += '<button id="admin-add-btn" class="priority-btn">Add Admin</button>';
+      html += '<input id="admin-add-input" type="text" placeholder="Enter Slack ID…" spellcheck="false" class="admin-input">';
+      html += '<button id="admin-add-btn" class="admin-btn admin-btn-primary">Add Admin</button>';
       html += '</div>';
 
       cont.innerHTML = html;
@@ -896,11 +896,11 @@ async function initSessionIdCard() {
       cont.style.display = '';
       const statusEl = document.getElementById('session-id-status');
       if (d.overridden) {
-        statusEl.textContent = '⚠️ Session ID has been overridden (active until reset or restart).';
-        statusEl.style.color = '#e05632';
+        statusEl.textContent = 'Session ID has been overridden (active until reset or restart).';
+        statusEl.className = 'session-id-status error';
       } else {
         statusEl.textContent = 'Using original HORIZONS_SESSION_ID from environment.';
-        statusEl.style.color = '#888';
+        statusEl.className = 'session-id-status';
       }
     } catch {
       skel.style.display = 'none';

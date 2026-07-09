@@ -713,23 +713,41 @@ body {
 }
 
 /* ── Admin: User Management ── */
+.admin-card-desc {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
 .admin-user-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
+  gap: 10px;
+  padding: 10px 12px;
   font-size: 13px;
-  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-family: 'DM Sans', monospace;
+  border: 2px solid #000;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  background: #fff8ee;
+}
+.admin-user-row:last-child {
+  margin-bottom: 0;
+}
+.admin-user-id {
+  flex: 1;
+  font-weight: 600;
 }
 .admin-remove-btn {
   background: none;
-  border: 1px solid #e74c3c;
+  border: 2px solid #e74c3c;
   color: #e74c3c;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 11px;
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  margin-left: auto;
+  transition: all 0.15s ease;
 }
 .admin-remove-btn:hover {
   background: #e74c3c;
@@ -738,15 +756,90 @@ body {
 .admin-add-row {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 16px;
   align-items: center;
 }
-.admin-add-row input {
+.admin-input {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  padding: 8px 12px;
+  border: 2px solid #000;
+  border-radius: 10px;
   font-size: 13px;
-  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-family: 'DM Sans', monospace;
+  background: #fff;
+}
+.admin-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(236,55,80,0.3);
+}
+.admin-btn {
+  padding: 8px 16px;
+  border: 2px solid #000;
+  border-radius: 10px;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 2px 2px 0 0 #000;
+  white-space: nowrap;
+}
+.admin-btn:hover {
+  transform: scale(1.02);
+}
+.admin-btn:active {
+  transform: scale(0.98);
+  box-shadow: 1px 1px 0 0 #000;
+}
+.admin-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+.admin-btn-primary {
+  background: #ec3750;
+  color: #fff;
+}
+.admin-btn-secondary {
+  background: #f3e8d8;
+  color: #000;
+}
+.admin-btn-secondary:hover {
+  background: #ffe9c7;
+}
+.session-id-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.session-id-status {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.session-id-status.success {
+  color: #22c55e;
+}
+.session-id-status.error {
+  color: #e74c3c;
+}
+.admin-section-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  margin-bottom: 10px;
+  margin-top: 16px;
+}
+.admin-section-label:first-child {
+  margin-top: 0;
+}
+.admin-empty {
+  padding: 20px;
+  text-align: center;
+  color: #888;
+  font-size: 13px;
 }
