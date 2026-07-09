@@ -70,7 +70,7 @@ struct PriorityReviewEntry {
 
 struct HorizonsClient {
     client: reqwest::Client,
-    token: String,
+    token: RwLock<String>,
     cached_stats: RwLock<Option<(Instant, serde_json::Value)>>,
     cached_queue: RwLock<Option<(Instant, serde_json::Value)>>,
     cached_past_reviews: RwLock<Option<(Instant, serde_json::Value)>>,
@@ -88,7 +88,7 @@ impl HorizonsClient {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to build client: {}", e))?,
-            token,
+token: RwLock::new(token),
             cached_stats: RwLock::new(None),
             cached_queue: RwLock::new(None),
             cached_past_reviews: RwLock::new(None),
@@ -99,7 +99,7 @@ impl HorizonsClient {
     }
 
     fn cookie_val(&self) -> String {
-        format!("sessionId={}", self.token)
+        format!("sessionId={}", self.token.blocking_read())
     }
 
     async fn fetch_json(&self, path: &str) -> Result<serde_json::Value, anyhow::Error> {
@@ -593,6 +593,8 @@ struct AppState {
     // One record per project, keyed by project ID. Kept until the project clears
     // regular review, so it also serves as the "already requested" lock.
     priority_review: RwLock<HashMap<u64, PriorityReviewEntry>>,
+    // Admin override of HORIZONS_SESSION_ID (runtime only, not persisted).
+    override_session_id: RwLock<Option<String>>,
 }
 
 impl AppState {
@@ -997,10 +999,12 @@ async fn handle_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let override_active = state.override_session_id.read().await.is_some();
     Json(serde_json::json!({
         "dev": state.dev_mode,
         "impersonate": state.can_impersonate(&headers).await,
         "priority_review_enabled": state.slack_bot_token.is_some() && state.priority_review_channel_id.is_some(),
+        "session_id_overridden": override_active,
     }))
 }
 
@@ -1225,6 +1229,63 @@ async fn handle_admin_remove_user(
         drop(file_admins);
         save_admin_users(&state).await;
     }
+    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+}
+
+// ── Admin: Override HORIZONS_SESSION_ID ──
+
+#[derive(Deserialize)]
+struct SessionIdOverrideInput {
+    session_id: String,
+}
+
+async fn handle_admin_get_session_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let override_sid = state.override_session_id.read().await;
+    (StatusCode::OK, Json(serde_json::json!({
+        "overridden": override_sid.is_some(),
+    }))).into_response()
+}
+
+async fn handle_admin_set_session_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<SessionIdOverrideInput>,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let sid = body.session_id.trim().to_string();
+    if sid.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "session_id required"}))).into_response();
+    }
+    let mut override_sid = state.override_session_id.write().await;
+    *override_sid = Some(sid.clone());
+    drop(override_sid);
+    *state.client.token.write().await = sid.clone();
+    println!("HORIZONS_SESSION_ID overridden by admin (length: {})", sid.len());
+    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+}
+
+async fn handle_admin_clear_session_id(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.can_impersonate(&headers).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut override_sid = state.override_session_id.write().await;
+    *override_sid = None;
+    drop(override_sid);
+    // Restore original from env
+    let original = std::env::var("HORIZONS_SESSION_ID").unwrap_or_default();
+    *state.client.token.write().await = original;
+    println!("HORIZONS_SESSION_ID override cleared by admin");
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
 }
 
@@ -2065,6 +2126,7 @@ async fn main() -> anyhow::Result<()> {
         priority_review_api_key,
         priority_review_storage_path,
         priority_review: RwLock::new(priority_review_data),
+        override_session_id: RwLock::new(None),
     });
 
     // Periodic cleanup of expired pending states and sessions
@@ -2102,6 +2164,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/events", get(handle_events))
         .route("/api/config", get(handle_config))
         .route("/api/dev/users", get(handle_dev_users))
+        .route("/api/admin/session-id", get(handle_admin_get_session_id).post(handle_admin_set_session_id).delete(handle_admin_clear_session_id))
         .route("/api/priority-review", post(handle_priority_review))
         .route("/api/priority-review/approved", get(handle_priority_review_approved))
         .route("/api/priority-review/admin", get(handle_priority_review_admin))

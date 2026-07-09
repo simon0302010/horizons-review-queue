@@ -663,6 +663,7 @@ async function initAdminPanel() {
   setInterval(loadAdmin, 30000);
   initReviewerHours();
   initAdminManagement();
+  initSessionIdCard();
 }
 
 function initReviewerHours() {
@@ -849,6 +850,106 @@ async function loadPriorityReviewStats() {
     skel.style.display = '';
     cont.style.display = 'none';
   }
+}
+
+// ── Admin: Session ID Override ──
+
+let sessionIdDisclaimerShown = false;
+
+function openSessionIdDisclaimer() {
+  document.getElementById('session-id-disclaimer-modal').style.display = '';
+}
+
+function closeSessionIdDisclaimer() {
+  document.getElementById('session-id-disclaimer-modal').style.display = 'none';
+}
+
+document.getElementById('session-id-disclaimer-cancel').addEventListener('click', closeSessionIdDisclaimer);
+document.getElementById('session-id-disclaimer-continue').addEventListener('click', () => {
+  closeSessionIdDisclaimer();
+  sessionIdDisclaimerShown = true;
+  showSessionIdInput();
+});
+
+document.getElementById('session-id-disclaimer-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeSessionIdDisclaimer();
+});
+
+function showSessionIdInput() {
+  const cont = document.getElementById('session-id-content');
+  if (cont) cont.style.display = '';
+}
+
+async function initSessionIdCard() {
+  const card = document.getElementById('session-id-card');
+  const skel = document.getElementById('session-id-skel');
+  const cont = document.getElementById('session-id-content');
+  if (!card || !skel || !cont) return;
+  card.style.display = '';
+
+  async function loadOverrideStatus() {
+    try {
+      const r = await fetch('/api/admin/session-id');
+      if (!r.ok) throw new Error();
+      const d = await r.json();
+      skel.style.display = 'none';
+      const statusEl = document.getElementById('session-id-status');
+      if (d.overridden) {
+        statusEl.textContent = '⚠️ Session ID has been overridden (active until reset or restart).';
+        statusEl.style.color = '#e05632';
+      } else {
+        statusEl.textContent = 'Using original HORIZONS_SESSION_ID from environment.';
+        statusEl.style.color = '#888';
+      }
+    } catch {
+      skel.style.display = 'none';
+      cont.style.display = '';
+    }
+  }
+
+  document.getElementById('session-id-apply-btn').addEventListener('click', async () => {
+    const input = document.getElementById('session-id-input');
+    const sid = input.value.trim();
+    if (!sid) return;
+
+    if (!sessionIdDisclaimerShown) {
+      openSessionIdDisclaimer();
+      return;
+    }
+
+    try {
+      const r = await fetch('/api/admin/session-id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid }),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        alert('Failed: ' + (err.error || 'unknown error'));
+        return;
+      }
+      input.value = '';
+      await loadOverrideStatus();
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    }
+  });
+
+  document.getElementById('session-id-clear-btn').addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/admin/session-id', { method: 'DELETE' });
+      if (!r.ok) {
+        const err = await r.json();
+        alert('Failed: ' + (err.error || 'unknown error'));
+        return;
+      }
+      await loadOverrideStatus();
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    }
+  });
+
+  await loadOverrideStatus();
 }
 
 loadStats();

@@ -152,6 +152,35 @@
     </div>
     <div id="admin-users-content" style="display:none"></div>
   </div>
+
+  <!-- Session ID Override card (visible to admins only) -->
+  <div class="card admin-card" id="session-id-card" style="display:none">
+    <div class="card-title">Session ID Override</div>
+    <div id="session-id-skel">
+      <div class="events-skel"></div>
+    </div>
+    <div id="session-id-content" style="display:none">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="session-id-input" type="password" placeholder="Paste new HORIZONS_SESSION_ID…" spellcheck="false" autocomplete="off" style="flex:1;min-width:200px;padding:6px 10px;border:2px solid #000;border-radius:8px;font-family:'DM Sans',monospace;font-size:13px;background:#fff">
+        <button id="session-id-apply-btn" class="priority-btn" style="font-size:12px;padding:4px 12px">Apply</button>
+        <button id="session-id-clear-btn" class="btn-secondary" style="font-size:12px;padding:4px 12px">Reset to original</button>
+      </div>
+      <div id="session-id-status" style="margin-top:10px;font-size:12px;font-weight:600"></div>
+    </div>
+  </div>
+</div>
+
+<div id="session-id-disclaimer-modal" class="modal-overlay" style="display:none">
+  <div class="modal-card">
+    <div class="modal-title">⚠️ Session ID Override</div>
+    <p class="modal-desc">This allows you to temporarily change the <strong>HORIZONS_SESSION_ID</strong> used by the server to authenticate with the Horizons API.</p>
+    <p class="modal-desc" style="margin-top:12px">Only use this if you know what you're doing. Overriding the session ID can break the dashboard for <strong>all users</strong> until it's reset or the server is restarted.</p>
+    <p class="modal-desc" style="margin-top:12px">The override is not persisted across server restarts.</p>
+    <div class="modal-actions">
+      <button type="button" id="session-id-disclaimer-cancel" class="btn-secondary">Cancel</button>
+      <button type="button" id="session-id-disclaimer-continue" class="btn-primary">I Understand, Continue</button>
+    </div>
+  </div>
 </div>
 
 <div class="footer">
