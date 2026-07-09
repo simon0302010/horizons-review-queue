@@ -98,16 +98,17 @@ token: RwLock::new(token),
         })
     }
 
-    fn cookie_val(&self) -> String {
-        format!("sessionId={}", self.token.blocking_read())
+    async fn cookie_val(&self) -> String {
+        format!("sessionId={}", self.token.read().await)
     }
 
     async fn fetch_json(&self, path: &str) -> Result<serde_json::Value, anyhow::Error> {
         let url = format!("{}{}", API_BASE, path);
+        let cookie = self.cookie_val().await;
         let resp = self
             .client
             .get(&url)
-            .header("Cookie", self.cookie_val())
+            .header("Cookie", cookie)
             .send()
             .await?;
         let status = resp.status();
