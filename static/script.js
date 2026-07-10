@@ -145,14 +145,11 @@ async function loadMyProjects() {
 
           const queuePos = (p.queuePosition != null && p.queuePosition > 0)
             ? `<span class="badge badge-queue-pos">#${p.queuePosition} in queue</span>` : '';
-          const claimed = (isQueue && p.claimed)
-            ? `<span class="badge badge-claimed">Being reviewed</span>` : '';
 
           mainBadges = `
             <span class="badge ${fraudClass}">Fraud ${fraudStatus}</span>
             <span class="badge ${reviewClass}">Review ${reviewStatus}</span>
-            ${queuePos}
-            ${claimed}`;
+            ${queuePos}`;
         } else {
           const badgeClass  = statusBadgeClass(p.status);
           const badgeLabel  = statusLabel(p.status, p.reviewStage);
