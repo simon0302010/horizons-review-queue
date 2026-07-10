@@ -136,3 +136,7 @@ If `SLACK_BOT_TOKEN` or `PRIORITY_REVIEW_CHANNEL_ID` is unset, the priority revi
 - A project can only be requested once — a record is created and persists through Approve/Reject until the project clears normal review.
 - If rejected, the project can be re-requested.
 - Records are persisted to `data/priority_review.json` (configurable) so they survive server restarts.
+
+## AI Usage
+
+This is vibecoded
