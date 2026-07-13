@@ -148,12 +148,12 @@ async function loadMyProjects() {
 
           mainBadges = `
             <span class="badge ${fraudClass}">Fraud ${fraudStatus}</span>
-            <span class="badge ${reviewClass}">Review ${reviewStatus}</span>
+            <span class="badge ${reviewClass}">${reviewStatus === 'Approved' ? `Review approved for ${getApprovedHours(p) ?? '?'}h` : `Review ${reviewStatus}`}</span>
             ${queuePos}`;
         } else {
           const badgeClass  = statusBadgeClass(p.status);
           const badgeLabel  = statusLabel(p.status, p.reviewStage);
-          mainBadges = `<span class="badge ${badgeClass}">${badgeLabel}</span>`;
+          mainBadges = `<span class="badge ${badgeClass}">${badgeLabel === 'Approved' ? `Approved for ${getApprovedHours(p) ?? '?'}h` : badgeLabel}</span>`;
         }
 
         const title = escHtml(p.projectTitle || '(untitled)');
@@ -219,6 +219,19 @@ function getReviewStatus(p) {
     }
   }
   return 'Pending';
+}
+
+function getApprovedHours(p) {
+  const tl = Array.isArray(p.timeline) ? p.timeline : [];
+  for (const e of tl) {
+    if (e.type === 'approved' && e.approvedHours != null) return e.approvedHours;
+  }
+  for (const e of tl) {
+    if (e.approvedHours != null) return e.approvedHours;
+    if (e.submittedHours != null) return e.submittedHours;
+    if (e.hours != null) return e.hours;
+  }
+  return null;
 }
 
 function getBadgeColorClass(status) {
