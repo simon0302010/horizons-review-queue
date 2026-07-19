@@ -1324,6 +1324,29 @@ async fn handle_script() -> impl IntoResponse {
     )
 }
 
+// ── Static assets ──
+
+async fn handle_favicon_ico() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/x-icon")],
+        include_bytes!("../static/favicon.ico"),
+    )
+}
+
+async fn handle_favicon_png() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../static/favicon.png"),
+    )
+}
+
+async fn handle_bg_pattern() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        include_bytes!("../static/content/bg-pattern.svg"),
+    )
+}
+
 // ── Priority Review ──
 
 #[derive(Deserialize)]
@@ -2156,6 +2179,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(handle_dashboard))
         .route("/style.css", get(handle_style))
         .route("/script.js", get(handle_script))
+        .route("/favicon.ico", get(handle_favicon_ico))
+        .route("/favicon.png", get(handle_favicon_png))
+        .route("/content/bg-pattern.svg", get(handle_bg_pattern))
         .route("/api/stats", get(handle_stats))
         .route("/api/auth/login", get(handle_auth_login))
         .route("/api/auth/callback", get(handle_auth_callback))
