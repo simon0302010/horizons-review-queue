@@ -20,14 +20,14 @@
   width: 300%;
   height: 300%;
   background-image: url(/content/bg-pattern.svg);
-  background-size: 1600px;
+  background-size: 1000px;
   background-repeat: repeat;
-  opacity: 0.5;
+  opacity: 0.15;
   animation: bg-slide 40s linear infinite;
 }
 @keyframes bg-slide {
   from { background-position: 0 0; }
-  to   { background-position: -1600px 1600px; }
+  to   { background-position: -1000px 1000px; }
 }
 
 /* ── Global loading bar (visible while background fetches are in flight) ── */
