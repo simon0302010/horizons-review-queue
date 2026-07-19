@@ -1,5 +1,35 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ── Animated background pattern ── */
+.bg-anim {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.bg-anim-pattern {
+  position: absolute;
+  inset: -50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(-19.54deg);
+}
+.bg-anim-pattern > div {
+  width: 300%;
+  height: 300%;
+  background-image: url(/content/bg-pattern.svg);
+  background-size: 1600px;
+  background-repeat: repeat;
+  opacity: 0.5;
+  animation: bg-slide 40s linear infinite;
+}
+@keyframes bg-slide {
+  from { background-position: 0 0; }
+  to   { background-position: -1600px 1600px; }
+}
+
 /* ── Global loading bar (visible while background fetches are in flight) ── */
 #loadbar {
   position: fixed;
@@ -32,6 +62,11 @@ body {
   min-height: 100vh;
 }
 
+.content-wrap {
+  position: relative;
+  z-index: 10;
+}
+
 .head {
   display: flex;
   align-items: center;
@@ -56,6 +91,10 @@ body {
   border-radius: 20px;
   box-shadow: 4px 4px 0 0 #000;
   padding: 28px 32px;
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.card:hover {
+  transform: scale(1.04);
 }
 .card-title {
   font-size: 20px;
@@ -267,6 +306,10 @@ body {
   max-height: 2000px;
   padding: 24px 28px;
   overflow-y: auto;
+  transition: max-height 0.4s ease, padding 0.3s ease, transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.island.open:hover {
+  transform: scale(1.02);
 }
 .island-title {
   font-size: 18px;
