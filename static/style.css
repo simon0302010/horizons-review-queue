@@ -638,11 +638,18 @@ body {
 .priority-btn:active { transform: scale(0.96); box-shadow: 1px 1px 0 0 #000; }
 .priority-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-/* ── Per-project ship-cancel button ── */
-.project-actions {
-  margin-top: 10px;
+/* ── Per-project footer row: timeline toggle (left) + ship-cancel (right) ── */
+.project-foot {
+  margin-top: 8px;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.project-foot .timeline-toggle {
+  margin-top: 0;
+}
+.project-foot .cancel-ship-btn {
+  margin-left: auto;
 }
 .cancel-ship-btn {
   padding: 4px 12px;

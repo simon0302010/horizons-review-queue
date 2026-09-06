@@ -173,6 +173,13 @@ async function loadMyProjects() {
           ? `<a class="project-link" href="https://horizons.hackclub.com/projects/${encodeURIComponent(p.projectId)}" target="_blank" rel="noopener">${title}</a>`
           : title;
 
+        // Timeline toggle (left) and ship-cancel button (right) share one row.
+        const timelineToggle = renderTimelineToggle(p);
+        const cancelBtn = showCancel ? `<button class="cancel-ship-btn" data-project-id="${p.projectId}">Request ship cancel</button>` : '';
+        const foot = (timelineToggle || cancelBtn)
+          ? `<div class="project-foot">${timelineToggle}${cancelBtn}</div>`
+          : '';
+
         return `<div class="project-item">
           <div class="project-row">
             <div class="project-info">
@@ -184,8 +191,8 @@ async function loadMyProjects() {
             </div>
           </div>
           ${renderFeedback(p)}
-          ${renderTimeline(p)}
-          ${showCancel ? `<div class="project-actions"><button class="cancel-ship-btn" data-project-id="${p.projectId}">Request ship cancel</button></div>` : ''}
+          ${foot}
+          ${renderTimelineBody(p)}
         </div>`;
       }).join('');
   } catch (e) {
@@ -301,10 +308,16 @@ function renderFeedback(p) {
   </div>`;
 }
 
-function renderTimeline(p) {
+function renderTimelineToggle(p) {
   const tl = Array.isArray(p.timeline) ? p.timeline : [];
   // A lone "submitted" entry isn't an interesting history; only show when there's
   // at least one review or resubmission to look back on.
+  if (tl.length < 2) return '';
+  return `<button class="timeline-toggle" data-show="Show timeline (${tl.length})" data-hide="Hide timeline">Show timeline (${tl.length})</button>`;
+}
+
+function renderTimelineBody(p) {
+  const tl = Array.isArray(p.timeline) ? p.timeline : [];
   if (tl.length < 2) return '';
 
   const rows = tl.map(e => {
@@ -325,8 +338,7 @@ function renderTimeline(p) {
     </div>`;
   }).join('');
 
-  return `<button class="timeline-toggle" data-show="Show timeline (${tl.length})" data-hide="Hide timeline">Show timeline (${tl.length})</button>
-    <div class="timeline" hidden>${rows}</div>`;
+  return `<div class="timeline" hidden>${rows}</div>`;
 }
 
 function tlLabel(type) {
@@ -441,8 +453,9 @@ document.getElementById('projects-content').addEventListener('click', (e) => {
   }
   const btn = e.target.closest('.timeline-toggle');
   if (!btn) return;
-  const tl = btn.nextElementSibling;
-  if (!tl || !tl.classList.contains('timeline')) return;
+  const item = btn.closest('.project-item');
+  const tl = item ? item.querySelector('.timeline') : null;
+  if (!tl) return;
   if (tl.hasAttribute('hidden')) {
     tl.removeAttribute('hidden');
     btn.textContent = btn.dataset.hide;
