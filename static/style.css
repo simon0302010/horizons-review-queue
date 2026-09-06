@@ -173,6 +173,33 @@ body {
   flex-shrink: 0;
 }
 
+.recent-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 2px solid #000;
+}
+.recent-row .recent-num {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  font-family: 'DM Sans', sans-serif;
+  color: #000;
+}
+.recent-row .desc {
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+}
+.recent-breakdown {
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+}
+
 .skel-bar {
   height: 52px;
   background: #ddd;

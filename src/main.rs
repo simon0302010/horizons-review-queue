@@ -627,6 +627,9 @@ struct PendingCounts {
     normal_review_pending: i64,
     just_fraud_review_pending: i64,
     just_normal_review_pending: i64,
+    reviewed_last_24h: i64,
+    approved_last_24h: i64,
+    rejected_last_24h: i64,
 }
 
 fn compute_pending(matrix: &serde_json::Value) -> PendingCounts {
@@ -643,14 +646,95 @@ fn compute_pending(matrix: &serde_json::Value) -> PendingCounts {
         normal_review_pending: rp_fraud_passed + rp_fraud_pending,
         just_fraud_review_pending: ra_fraud_pending,
         just_normal_review_pending: rp_fraud_passed,
+        reviewed_last_24h: 0,
+        approved_last_24h: 0,
+        rejected_last_24h: 0,
     }
+}
+
+fn parse_reviewed_at(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = s.parse::<chrono::DateTime<chrono::Utc>>() {
+        return Some(dt);
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    // Fallback for timestamps without an explicit timezone (assume UTC).
+    if let Ok(naive) =
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+    {
+        return Some(chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc));
+    }
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc));
+    }
+    None
+}
+
+/// Classify a past-review entry as approved (`Some(true)`), rejected
+/// (`Some(false)`), or undecided (`None`) — mirroring the frontend's
+/// `getReviewStatus` logic.
+fn classify_review_decision(r: &serde_json::Value) -> Option<bool> {
+    if let Some(b) = r["reviewPassed"].as_bool() {
+        return Some(b);
+    }
+    match r["approvalStatus"].as_str() {
+        Some("approved") => Some(true),
+        Some("rejected") => Some(false),
+        _ => None,
+    }
+}
+
+/// Count distinct projects whose latest decisive review happened in the last
+/// 24h. Returns `(total, approved, rejected)` with `total = approved + rejected`.
+fn count_recent_reviews(past: &serde_json::Value) -> (i64, i64, i64) {
+    let Some(reviews) = past["reviews"].as_array() else {
+        return (0, 0, 0);
+    };
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
+
+    // Deduplicate by project, keeping the latest review per project.
+    let mut latest: HashMap<u64, (chrono::DateTime<chrono::Utc>, bool)> = HashMap::new();
+    for r in reviews {
+        let Some(pid) = r["projectId"].as_u64() else { continue };
+        let Some(ts_str) = r["reviewedAt"].as_str() else { continue };
+        let Some(ts) = parse_reviewed_at(ts_str) else { continue };
+        let Some(approved) = classify_review_decision(r) else { continue };
+        match latest.get(&pid) {
+            Some((prev_ts, _)) if *prev_ts >= ts => {}
+            _ => {
+                latest.insert(pid, (ts, approved));
+            }
+        }
+    }
+
+    let mut approved = 0i64;
+    let mut rejected = 0i64;
+    for (ts, is_approved) in latest.values() {
+        if *ts >= cutoff {
+            if *is_approved {
+                approved += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+    }
+    (approved + rejected, approved, rejected)
 }
 
 async fn handle_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.client.get_stats().await {
         Ok(stats) => {
             let funnel = &stats["reviewProjects"]["funnelMatrix"];
-            let counts = compute_pending(funnel);
+            let mut counts = compute_pending(funnel);
+            // Enrich with 24h throughput from past reviews (cached 60s).
+            // On failure we keep the zeros so pending stats still load.
+            if let Ok(past) = state.client.get_past_reviews().await {
+                let (total, approved, rejected) = count_recent_reviews(&past);
+                counts.reviewed_last_24h = total;
+                counts.approved_last_24h = approved;
+                counts.rejected_last_24h = rejected;
+            }
             Json(counts).into_response()
         }
         Err(e) => {

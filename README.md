@@ -36,7 +36,7 @@ A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Ax
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/config` | Public configuration: `{ dev: bool, impersonate: bool, priority_review_enabled: bool }`. No auth required. |
-| `GET` | `/api/stats` | Pipeline statistics (`PendingCounts`). Requires valid session. Returns: `{ total_pending, fraud_review_pending, normal_review_pending, just_fraud_review_pending, just_normal_review_pending }`. |
+| `GET` | `/api/stats` | Pipeline statistics (`PendingCounts`). Requires valid session. Returns: `{ total_pending, fraud_review_pending, normal_review_pending, just_fraud_review_pending, just_normal_review_pending, reviewed_last_24h, approved_last_24h, rejected_last_24h }` (24h counts are distinct projects decisively reviewed in the last 24h). |
 | `GET` | `/api/my/projects` | All projects belonging to the logged-in user across queue, past reviews, and fraud-rejected. Supports `?user=<slack_id>` (admin/DEV only). Each project includes: `projectId`, `projectTitle`, `projectType`, `source`, `status`, `reviewStage`, `queuePosition`, `claimed`, `priorityReviewRequested`, `timeline`, and `feedback`. Requires valid session. |
 | `GET` | `/api/events` | Event-level approved hours breakdown. Requires valid session. |
 

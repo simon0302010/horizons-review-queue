@@ -389,6 +389,17 @@ async function loadStats() {
 
     document.getElementById('total-num').textContent = total;
 
+    const reviewed = d.reviewed_last_24h ?? 0;
+    const approved = d.approved_last_24h ?? 0;
+    const rejected = d.rejected_last_24h ?? 0;
+    const recentRow = document.getElementById('recent-row');
+    if (recentRow && typeof d.reviewed_last_24h === 'number') {
+      recentRow.style.display = '';
+      document.getElementById('recent-num').textContent = reviewed;
+      document.getElementById('recent-breakdown').textContent =
+        `(${approved} approved · ${rejected} rejected)`;
+    }
+
     const pct = v => total > 0 ? (v / total) * 100 : 0;
     const segs = [
       { id: 'seg-jf', v: jf },
