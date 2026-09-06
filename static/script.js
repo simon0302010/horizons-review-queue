@@ -142,10 +142,10 @@ async function loadMyProjects() {
         const isQueue = p.source === 'queue';
         const isPending = p.status === 'pending';
         const meta = p.projectType ? p.projectType.replace(/_/g, ' ') : '';
-        // Pending regular review = cleared fraud, waiting on normal review.
-        const pendingRegularReview = isQueue && isPending
-          && (p.joeFraudPassed === true || p.reviewStage === 'Normal Review');
-        const showCancel = pendingRegularReview && shipCancelEnabled && (currentUser || devUser);
+        // Any project still pending in the queue (fraud or regular review
+        // stage) can have its ship cancelled.
+        const pendingReview = isQueue && isPending;
+        const showCancel = pendingReview && shipCancelEnabled && (currentUser || devUser);
 
         let mainBadges;
         if (isPending) {

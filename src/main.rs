@@ -1655,8 +1655,8 @@ struct ShipCancelInput {
     reason: String,
 }
 
-/// A user asks for one of their ships pending regular review to be cancelled.
-/// Verifies ownership and stage, then DMs the configured reviewer with the
+/// A user asks for one of their ships pending review to be cancelled.
+/// Verifies ownership and queue status, then DMs the configured reviewer with the
 /// project link and the user's reason, using the same Slack bot.
 async fn handle_ship_cancel(
     State(state): State<Arc<AppState>>,
@@ -1695,16 +1695,15 @@ async fn handle_ship_cancel(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "reason must be between 1 and 2000 characters"}))).into_response();
     }
 
-    // Verify the project belongs to the user and is pending regular review
-    // (cleared fraud, waiting on normal review). Also pull the project type
+    // Verify the project belongs to the user and is still pending review
+    // (fraud or regular stage). Also pull the project type
     // and hours to show in the Slack message.
     let (project_title, project_type, hours) = match state.client.find_user_projects(&slack_id).await {
         Ok(projects) => {
             match projects.iter().find(|p| {
                 p["projectId"].as_u64() == Some(project_id)
                     && p["source"].as_str() == Some("queue")
-                    && (p["reviewStage"].as_str() == Some("Normal Review")
-                        || p["joeFraudPassed"].as_bool() == Some(true))
+                    && p["status"].as_str() == Some("pending")
             }) {
                 Some(p) => {
                     let title = p["projectTitle"]
@@ -1722,7 +1721,7 @@ async fn handle_ship_cancel(
                     (title, ptype, hours)
                 }
                 None => {
-                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project not found or not pending regular review"}))).into_response();
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project not found or not pending review"}))).into_response();
                 }
             }
         }

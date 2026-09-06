@@ -46,7 +46,7 @@ A Rust web dashboard for reviewing Hack Club Horizons submissions. Built with Ax
 |--------|------|-------------|
 | `POST` | `/api/priority-review` | Submit a priority review request. Requires valid session. Body: `{ project_id: u64, reason: string }`. Creates a `Pending` record and posts a Slack message with Approve/Reject buttons. Returns `409` if a non-rejected record already exists for the project. |
 | `GET` | `/api/priority-review/approved` | Returns all priority review records with status `Approved`. Protected by `PRIORITY_REVIEW_API_KEY` (send as `Authorization: Bearer <key>` or `?key=<key>`). Returns `501 Not Implemented` if API key is unset. Each entry: `{ project_id, project_title, reason, slack_id, status, decided_by, decided_at }`. |
-| `POST` | `/api/ship-cancel` | Request a ship cancellation for a project pending regular review. Requires valid session. Body: `{ project_id: u64, reason: string }`. DMs the configured reviewer (`SHIP_CANCEL_TARGET_USER_ID`) via the Slack bot with the project link and reason. Returns `400` if the project is not yours or not pending regular review, `501` if `SLACK_BOT_TOKEN` is unset. |
+| `POST` | `/api/ship-cancel` | Request a ship cancellation for a project pending review (fraud or regular stage). Requires valid session. Body: `{ project_id: u64, reason: string }`. DMs the configured reviewer (`SHIP_CANCEL_TARGET_USER_ID`) via the Slack bot with the project link and reason. Returns `400` if the project is not yours or not pending review, `501` if `SLACK_BOT_TOKEN` is unset. |
 
 ### Slack Integration
 
