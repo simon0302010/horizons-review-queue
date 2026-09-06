@@ -638,6 +638,29 @@ body {
 .priority-btn:active { transform: scale(0.96); box-shadow: 1px 1px 0 0 #000; }
 .priority-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
+/* ── Per-project ship-cancel button ── */
+.project-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+.cancel-ship-btn {
+  padding: 4px 12px;
+  border: 2px solid #000;
+  border-radius: 8px;
+  background: #fff;
+  color: #000;
+  font-family: 'Bricolage Grotesque', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+  box-shadow: 2px 2px 0 0 #000;
+  white-space: nowrap;
+}
+.cancel-ship-btn:hover { transform: scale(1.04); }
+.cancel-ship-btn:active { transform: scale(0.96); box-shadow: 1px 1px 0 0 #000; }
+
 /* ── Priority review modal ── */
 .modal-overlay {
   position: fixed;

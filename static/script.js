@@ -30,6 +30,8 @@ let devUsers = [];        // [{slack_id, display_name}] for the DEV autocomplete
 let priorityReviewEnabled = false;
 let priorityRequested = new Set();
 let priorityProjects = [];
+let shipCancelEnabled = false;
+let allProjects = [];
 
 async function checkAuth() {
   try {
@@ -51,7 +53,8 @@ async function loadConfig() {
     const r = await fetch('/api/config');
     const d = await r.json();
     priorityReviewEnabled = !!d.priority_review_enabled;
-  } catch { priorityReviewEnabled = false; }
+    shipCancelEnabled = !!d.ship_cancel_enabled;
+  } catch { priorityReviewEnabled = false; shipCancelEnabled = false; }
 }
 
 function renderUser() {
@@ -99,6 +102,10 @@ async function loadMyProjects() {
     return;
   }
 
+  // Ship-cancel buttons depend on server config (Slack bot), which isn't
+  // loaded yet in DEV preview mode — refresh it before rendering.
+  await loadConfig();
+
   island.classList.add('open');
   const titleText = document.getElementById('island-title-text');
   if (titleText) titleText.textContent = devUser ? `Projects · ${devUser}` : 'My Project Approvals';
@@ -123,6 +130,7 @@ async function loadMyProjects() {
     // locked until they clear regular review.
     priorityRequested = new Set();
     priorityProjects = projects.filter(p => p.source === 'queue');
+    allProjects = projects;
     for (const p of projects) {
       if (p.priorityReviewRequested) {
         priorityRequested.add(p.projectId);
@@ -134,6 +142,10 @@ async function loadMyProjects() {
         const isQueue = p.source === 'queue';
         const isPending = p.status === 'pending';
         const meta = p.projectType ? p.projectType.replace(/_/g, ' ') : '';
+        // Pending regular review = cleared fraud, waiting on normal review.
+        const pendingRegularReview = isQueue && isPending
+          && (p.joeFraudPassed === true || p.reviewStage === 'Normal Review');
+        const showCancel = pendingRegularReview && shipCancelEnabled && (currentUser || devUser);
 
         let mainBadges;
         if (isPending) {
@@ -173,6 +185,7 @@ async function loadMyProjects() {
           </div>
           ${renderFeedback(p)}
           ${renderTimeline(p)}
+          ${showCancel ? `<div class="project-actions"><button class="cancel-ship-btn" data-project-id="${p.projectId}">Request ship cancel</button></div>` : ''}
         </div>`;
       }).join('');
   } catch (e) {
@@ -418,8 +431,14 @@ async function loadStats() {
   }
 }
 
-// ── Timeline expand/collapse (event delegation; container persists) ──
+// ── Timeline expand/collapse + ship-cancel buttons (event delegation; container persists) ──
 document.getElementById('projects-content').addEventListener('click', (e) => {
+  const cancelBtn = e.target.closest('.cancel-ship-btn');
+  if (cancelBtn) {
+    const pid = parseInt(cancelBtn.dataset.projectId, 10);
+    if (pid) openShipCancelModal(pid);
+    return;
+  }
   const btn = e.target.closest('.timeline-toggle');
   if (!btn) return;
   const tl = btn.nextElementSibling;
@@ -617,6 +636,77 @@ document.getElementById('priority-disclaimer-modal').addEventListener('click', (
 });
 document.getElementById('priority-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closePriorityModal();
+});
+
+// ── Ship Cancel ──
+
+let shipCancelProjectId = null;
+
+function openShipCancelModal(projectId) {
+  const p = allProjects.find(x => x.projectId === projectId);
+  shipCancelProjectId = projectId;
+  document.getElementById('ship-cancel-error').style.display = 'none';
+  document.getElementById('ship-cancel-success').style.display = 'none';
+  document.getElementById('ship-cancel-form').style.display = '';
+  document.getElementById('ship-cancel-reason').value = '';
+  document.getElementById('ship-cancel-reason-count').textContent = '0';
+  document.getElementById('ship-cancel-project-name').textContent =
+    (p && p.projectTitle) ? p.projectTitle : `Project #${projectId}`;
+  document.getElementById('ship-cancel-modal').style.display = '';
+}
+
+function closeShipCancelModal() {
+  document.getElementById('ship-cancel-modal').style.display = 'none';
+  shipCancelProjectId = null;
+}
+
+document.getElementById('ship-cancel-back').addEventListener('click', closeShipCancelModal);
+
+document.getElementById('ship-cancel-close').addEventListener('click', closeShipCancelModal);
+
+document.getElementById('ship-cancel-reason').addEventListener('input', function () {
+  document.getElementById('ship-cancel-reason-count').textContent = this.value.length;
+});
+
+document.getElementById('ship-cancel-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const reason = document.getElementById('ship-cancel-reason').value.trim();
+  const errorEl = document.getElementById('ship-cancel-error');
+  const submitBtn = document.getElementById('ship-cancel-submit');
+
+  if (!shipCancelProjectId || !reason) {
+    errorEl.textContent = 'Please tell us briefly why this ship should be cancelled.';
+    errorEl.style.display = '';
+    return;
+  }
+
+  errorEl.style.display = 'none';
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Sending...';
+
+  try {
+    const r = await fetch('/api/ship-cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: shipCancelProjectId, reason }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      throw new Error(data.error || 'Request failed');
+    }
+    document.getElementById('ship-cancel-form').style.display = 'none';
+    document.getElementById('ship-cancel-success').style.display = '';
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = '';
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Yes, request cancel';
+  }
+});
+
+document.getElementById('ship-cancel-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeShipCancelModal();
 });
 
 // ── Admin: Priority Review Queue ──

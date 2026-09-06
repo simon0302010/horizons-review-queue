@@ -590,6 +590,8 @@ struct AppState {
     slack_signing_secret: Option<String>,
     priority_review_channel_id: Option<String>,
     priority_review_api_key: Option<String>,
+    // Slack user ID that receives ship-cancel requests via the same bot.
+    ship_cancel_target: String,
     priority_review_storage_path: String,
     // One record per project, keyed by project ID. Kept until the project clears
     // regular review, so it also serves as the "already requested" lock.
@@ -1089,6 +1091,7 @@ async fn handle_config(
         "dev": state.dev_mode,
         "impersonate": state.can_impersonate(&headers).await,
         "priority_review_enabled": state.slack_bot_token.is_some() && state.priority_review_channel_id.is_some(),
+        "ship_cancel_enabled": state.slack_bot_token.is_some(),
         "session_id_overridden": override_active,
     }))
 }
@@ -1644,6 +1647,172 @@ async fn handle_priority_review(
     }
 }
 
+// ── Ship cancel ──
+
+#[derive(Deserialize)]
+struct ShipCancelInput {
+    project_id: u64,
+    reason: String,
+}
+
+/// A user asks for one of their ships pending regular review to be cancelled.
+/// Verifies ownership and stage, then DMs the configured reviewer with the
+/// project link and the user's reason, using the same Slack bot.
+async fn handle_ship_cancel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<ShipCancelInput>,
+) -> impl IntoResponse {
+    let bot_token = match &state.slack_bot_token {
+        Some(t) => t.clone(),
+        _ => return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "ship cancel not configured"}))).into_response(),
+    };
+    let target = state.ship_cancel_target.clone();
+
+    let slack_id = match resolve_session_slack_id(&state, &headers).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let display_name = {
+        let sessions = state.sessions.read().await;
+        let sid = match get_session_id(&headers) {
+            Some(s) => s,
+            None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "no session"}))).into_response(),
+        };
+        sessions
+            .get(&sid)
+            .and_then(|s| s.display_name.clone())
+            .unwrap_or_else(|| slack_id.clone())
+    };
+
+    let project_id = body.project_id;
+    if project_id == 0 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "project_id required"}))).into_response();
+    }
+    let reason = body.reason.trim().to_string();
+    if reason.is_empty() || reason.len() > 2000 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "reason must be between 1 and 2000 characters"}))).into_response();
+    }
+
+    // Verify the project belongs to the user and is pending regular review
+    // (cleared fraud, waiting on normal review). Also pull the project type
+    // and hours to show in the Slack message.
+    let (project_title, project_type, hours) = match state.client.find_user_projects(&slack_id).await {
+        Ok(projects) => {
+            match projects.iter().find(|p| {
+                p["projectId"].as_u64() == Some(project_id)
+                    && p["source"].as_str() == Some("queue")
+                    && (p["reviewStage"].as_str() == Some("Normal Review")
+                        || p["joeFraudPassed"].as_bool() == Some(true))
+            }) {
+                Some(p) => {
+                    let title = p["projectTitle"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("Project #{}", project_id));
+                    let ptype = p["projectType"].as_str().unwrap_or("").replace('_', " ");
+                    let hours = p["timeline"].as_array().and_then(|tl| {
+                        tl.iter().find_map(|e| {
+                            e["approvedHours"].as_f64()
+                                .or_else(|| e["submittedHours"].as_f64())
+                                .or_else(|| e["hours"].as_f64())
+                        })
+                    });
+                    (title, ptype, hours)
+                }
+                None => {
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Project not found or not pending regular review"}))).into_response();
+                }
+            }
+        }
+        Err(_) => {
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Failed to verify project"}))).into_response();
+        }
+    };
+
+    let message = serde_json::json!({
+        "channel": target,
+        "text": format!("Ship cancel requested by {} for project #{}: {}", display_name, project_id, reason),
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "Ship Cancel Requested"
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Project:*\n<https://horizons.hackclub.com/projects/{}|{}>", project_id, project_title)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Project ID:*\n{}", project_id)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Type:*\n{}", if project_type.is_empty() { "—".to_string() } else { project_type })
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Hours:*\n{}", hours.map(|h| format!("{}h", h)).unwrap_or_else(|| "—".to_string()))
+                    }
+                ]
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format!("*Reason:*\n{}", reason)
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("Requested by: {} (<@{}>)", display_name, slack_id)
+                    }
+                ]
+            }
+        ]
+    });
+
+    let slack_resp = state
+        .client
+        .client
+        .post("https://slack.com/api/chat.postMessage")
+        .header("Authorization", format!("Bearer {}", bot_token))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .json(&message)
+        .send()
+        .await;
+
+    match slack_resp {
+        Ok(resp) => {
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            if !status.is_success() || body["ok"] != serde_json::Value::Bool(true) {
+                let err = body["error"].as_str().unwrap_or("unknown_slack_error");
+                eprintln!("Slack chat.postMessage (ship-cancel) error: {} (status {})", err, status);
+                return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("Slack error: {}", err)}))).into_response();
+            }
+
+            println!("project {} ship cancel requested by {} ({})", project_id, display_name, slack_id);
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Err(e) => {
+            eprintln!("Slack request failed: {}", e);
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("Slack request failed: {}", e)})))
+                .into_response()
+        }
+    }
+}
+
 // ── Slack interaction handling ──
 
 fn verify_slack_signature(secret: &str, timestamp: &str, body: &[u8], signature_header: &str) -> bool {
@@ -2180,6 +2349,9 @@ async fn main() -> anyhow::Result<()> {
     let slack_signing_secret = std::env::var("SLACK_SIGNING_SECRET").ok();
     let priority_review_channel_id = std::env::var("PRIORITY_REVIEW_CHANNEL_ID").ok();
     let priority_review_api_key = std::env::var("PRIORITY_REVIEW_API_KEY").ok();
+    // Who receives ship-cancel requests via DM from the same bot.
+    let ship_cancel_target = std::env::var("SHIP_CANCEL_TARGET_USER_ID")
+        .unwrap_or_else(|_| "U08HC7N4JJW".to_string());
     if slack_bot_token.is_some() && priority_review_channel_id.is_some() {
         println!("Priority review Slack integration enabled");
         if slack_signing_secret.is_none() {
@@ -2232,6 +2404,7 @@ async fn main() -> anyhow::Result<()> {
         slack_signing_secret,
         priority_review_channel_id,
         priority_review_api_key,
+        ship_cancel_target,
         priority_review_storage_path,
         priority_review: RwLock::new(priority_review_data),
         override_session_id: RwLock::new(None),
@@ -2277,6 +2450,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/dev/users", get(handle_dev_users))
         .route("/api/admin/session-id", get(handle_admin_get_session_id).post(handle_admin_set_session_id).delete(handle_admin_clear_session_id))
         .route("/api/priority-review", post(handle_priority_review))
+        .route("/api/ship-cancel", post(handle_ship_cancel))
         .route("/api/priority-review/approved", get(handle_priority_review_approved))
         .route("/api/priority-review/admin", get(handle_priority_review_admin))
         .route("/api/priority-review/stats", get(handle_priority_review_stats))
