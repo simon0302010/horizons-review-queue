@@ -155,13 +155,9 @@ async function loadMyProjects() {
           const fraudClass = getBadgeColorClass(fraudStatus);
           const reviewClass = getBadgeColorClass(reviewStatus);
 
-          const queuePos = (p.queuePosition != null && p.queuePosition > 0)
-            ? `<span class="badge badge-queue-pos">#${p.queuePosition} in queue</span>` : '';
-
           mainBadges = `
             <span class="badge ${fraudClass}">Fraud ${fraudStatus}</span>
-            <span class="badge ${reviewClass}">${reviewStatus === 'Approved' ? `Review approved for ${getApprovedHours(p) ?? '?'}h` : `Review ${reviewStatus}`}</span>
-            ${queuePos}`;
+            <span class="badge ${reviewClass}">${reviewStatus === 'Approved' ? `Review approved for ${getApprovedHours(p) ?? '?'}h` : `Review ${reviewStatus}`}</span>`;
         } else {
           const badgeClass  = statusBadgeClass(p.status);
           const badgeLabel  = statusLabel(p.status, p.reviewStage);

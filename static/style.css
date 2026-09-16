@@ -490,12 +490,6 @@ body {
 .badge-status-approved { background: #22c55e; color: #fff; }
 .badge-status-pending  { background: #facc15; color: #000; }
 .badge-status-rejected { background: #e05632; color: #fff; }
-.badge-queue-pos {
-  background: #000;
-  color: #f3e8d8;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.03em;
-}
 .badge-claimed {
   background: #f3e8d8;
   color: #000;
